@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  object-tracker:
+    build: .
+    container_name: object-tracker
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8001:8001"  # UI web: http://IP-DEL-SERVIDOR:8001
+    volumes:
+      - ./data:/app/data  # SQLite (cámaras + detecciones) y galería de imágenes
+    networks:
+      - vision-net
+
+networks:
+  vision-net:
+    external: true
+    name: n8n_default  # reemplazar por el nombre real de la red donde corre tu n8n

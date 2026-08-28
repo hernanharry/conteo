@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Cámaras{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h2>Agregar cámara</h2>
+  <form method="post" action="{{ url_for('add_camera_route') }}" class="form-grid">
+    <label>Nombre
+      <input type="text" name="name" placeholder="entrada-principal" required>
+    </label>
+    <label>URL RTSP
+      <input type="text" name="rtsp_url" placeholder="rtsp://usuario:pass@192.168.1.64:554/Streaming/Channels/101" required>
+    </label>
+    <label>Clases a detectar (IDs COCO separados por coma)
+      <input type="text" name="classes" value="0,2,3,5,7">
+      <small>0 persona · 1 bicicleta · 2 auto · 3 moto · 5 bus · 7 camión</small>
+    </label>
+    <label>Confianza mínima
+      <input type="text" name="conf_threshold" value="0.35">
+    </label>
+    <label>Línea de conteo — inicio (x,y)
+      <input type="text" name="line_start" value="0,300">
+    </label>
+    <label>Línea de conteo — fin (x,y)
+      <input type="text" name="line_end" value="1280,300">
+    </label>
+    <button type="submit">Agregar cámara</button>
+  </form>
+  <small>El punto de la línea se calibra mirando el vivo una vez agregada la cámara (las coordenadas son en píxeles del frame).</small>
+</section>
+
+<section class="card">
+  <h2>Cámaras registradas</h2>
+  {% if not cameras %}
+    <p class="muted">Todavía no agregaste ninguna cámara.</p>
+  {% else %}
+    <table class="cam-table">
+      <thead>
+        <tr><th>Nombre</th><th>Estado</th><th>Entradas</th><th>Salidas</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for cam in cameras %}
+        <tr>
+          <td><a href="{{ url_for('live', name=cam.name) }}">{{ cam.name }}</a></td>
+          <td><span class="status status-{{ statuses.get(cam.name, 'detenida') | replace(' ', '-') }}">{{ statuses.get(cam.name, 'detenida') }}</span></td>
+          <td>{{ counts.get(cam.name, {}).get('in_count', '-') }}</td>
+          <td>{{ counts.get(cam.name, {}).get('out_count', '-') }}</td>
+          <td>
+            <form method="post" action="{{ url_for('delete_camera_route', name=cam.name) }}" onsubmit="return confirm('¿Eliminar {{ cam.name }}?');">
+              <button type="submit" class="danger">Eliminar</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>
+
+{% endblock %}

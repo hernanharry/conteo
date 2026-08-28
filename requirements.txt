@@ -1,0 +1,5 @@
+ultralytics==8.3.40
+supervision==0.24.0
+opencv-python-headless==4.10.0.84
+requests==2.32.3
+flask==3.0.3

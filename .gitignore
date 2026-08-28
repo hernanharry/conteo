@@ -1,0 +1,39 @@
+# Secretos y credenciales
+.env
+*.env
+!.env.example
+
+# Datos de runtime y persistencia
+data/
+*.db
+*.sqlite
+*.sqlite3
+gallery/
+
+# Modelos descargados en runtime
+*.pt
+*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Artefactos de prueba y medicion
+artifacts/
+*_results.csv
+*.log
+
+# Sistema / editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

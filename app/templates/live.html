@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}Vivo — {{ camera.name }}{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h2>{{ camera.name }}</h2>
+  <p class="muted" id="lineInfo">
+    Línea de conteo: {{ camera.line_start }} → {{ camera.line_end }} · Confianza mínima: {{ camera.conf_threshold }}
+  </p>
+
+  <div class="live-view" id="liveWrap">
+    <img id="liveImg" src="{{ url_for('stream', name=camera.name) }}" alt="Vivo {{ camera.name }}">
+    <svg id="lineOverlay"></svg>
+  </div>
+
+  <div class="line-editor-bar">
+    <button type="button" id="editLineBtn" class="btn-secondary">✏️ Editar línea de conteo</button>
+    <button type="button" id="saveLineBtn" class="btn-primary" style="display:none">💾 Guardar línea</button>
+    <button type="button" id="cancelLineBtn" class="btn-secondary" style="display:none">Cancelar</button>
+    <span class="muted" id="lineStatus"></span>
+  </div>
+
+  <a href="{{ url_for('index') }}">← Volver a cámaras</a>
+</section>
+
+<script>
+(function () {
+  const cameraName = {{ camera.name | tojson }};
+  const img = document.getElementById("liveImg");
+  const svg = document.getElementById("lineOverlay");
+  const editBtn = document.getElementById("editLineBtn");
+  const saveBtn = document.getElementById("saveLineBtn");
+  const cancelBtn = document.getElementById("cancelLineBtn");
+  const statusEl = document.getElementById("lineStatus");
+  const lineInfo = document.getElementById("lineInfo");
+  const baseStreamUrl = {{ url_for('stream', name=camera.name) | tojson }};
+
+  // Un stream MJPEG que se corta a medio camino no siempre avisa con un
+  // evento claro (varia por navegador) -- en vez de tratar de detectar el
+  // corte, se fuerza una reconexion periodica. Si el stream seguia sano no
+  // se nota (un frame se pierde); si estaba congelado, se recupera solo.
+  const RECONNECT_INTERVAL_MS = 20000;
+
+  function reconnectStream() {
+    img.src = baseStreamUrl + "?t=" + Date.now();
+  }
+
+  img.addEventListener("error", reconnectStream);
+  setInterval(reconnectStream, RECONNECT_INTERVAL_MS);
+
+  let naturalW = null, naturalH = null;
+  let currentLine = parseServerLine();
+  let editing = false;
+  let dragging = false;
+  let dragStart = null;
+  let pendingLine = null;
+
+  function parseServerLine() {
+    const s = {{ camera.line_start | tojson }}.split(",").map(Number);
+    const e = {{ camera.line_end | tojson }}.split(",").map(Number);
+    return { x1: s[0], y1: s[1], x2: e[0], y2: e[1] };
+  }
+
+  function displayToNatural(px, py) {
+    const rect = img.getBoundingClientRect();
+    const scaleX = naturalW / rect.width;
+    const scaleY = naturalH / rect.height;
+    return { x: Math.round(px * scaleX), y: Math.round(py * scaleY) };
+  }
+
+  function naturalToDisplay(x, y) {
+    const rect = img.getBoundingClientRect();
+    const scaleX = rect.width / naturalW;
+    const scaleY = rect.height / naturalH;
+    return { x: x * scaleX, y: y * scaleY };
+  }
+
+  function drawLine(line, color) {
+    svg.innerHTML = "";
+    if (!naturalW) return;
+    const p1 = naturalToDisplay(line.x1, line.y1);
+    const p2 = naturalToDisplay(line.x2, line.y2);
+    const el = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    el.setAttribute("x1", p1.x);
+    el.setAttribute("y1", p1.y);
+    el.setAttribute("x2", p2.x);
+    el.setAttribute("y2", p2.y);
+    el.setAttribute("stroke", color || "#4da3ff");
+    el.setAttribute("stroke-width", "3");
+    el.setAttribute("stroke-dasharray", editing ? "8,5" : "0");
+    svg.appendChild(el);
+    [p1, p2].forEach((p) => {
+      const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      c.setAttribute("cx", p.x);
+      c.setAttribute("cy", p.y);
+      c.setAttribute("r", editing ? 6 : 0);
+      c.setAttribute("fill", "#fff");
+      c.setAttribute("stroke", color || "#4da3ff");
+      c.setAttribute("stroke-width", "2");
+      svg.appendChild(c);
+    });
+  }
+
+  function syncOverlaySize() {
+    const rect = img.getBoundingClientRect();
+    svg.setAttribute("width", rect.width);
+    svg.setAttribute("height", rect.height);
+    svg.style.width = rect.width + "px";
+    svg.style.height = rect.height + "px";
+    drawLine(pendingLine || currentLine);
+  }
+
+  img.addEventListener("load", function () {
+    if (!naturalW && img.naturalWidth) {
+      naturalW = img.naturalWidth;
+      naturalH = img.naturalHeight;
+    }
+    syncOverlaySize();
+  });
+  window.addEventListener("resize", syncOverlaySize);
+
+  editBtn.addEventListener("click", function () {
+    editing = true;
+    pendingLine = Object.assign({}, currentLine);
+    svg.style.cursor = "crosshair";
+    editBtn.style.display = "none";
+    saveBtn.style.display = "inline-block";
+    cancelBtn.style.display = "inline-block";
+    statusEl.textContent = "Hacé click y arrastrá sobre el video para trazar la nueva línea.";
+    drawLine(pendingLine);
+  });
+
+  cancelBtn.addEventListener("click", function () {
+    editing = false;
+    pendingLine = null;
+    svg.style.cursor = "default";
+    editBtn.style.display = "inline-block";
+    saveBtn.style.display = "none";
+    cancelBtn.style.display = "none";
+    statusEl.textContent = "";
+    drawLine(currentLine);
+  });
+
+  svg.addEventListener("mousedown", function (e) {
+    if (!editing) return;
+    const rect = svg.getBoundingClientRect();
+    dragStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    dragging = true;
+  });
+
+  svg.addEventListener("mousemove", function (e) {
+    if (!editing || !dragging) return;
+    const rect = svg.getBoundingClientRect();
+    const cur = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const p1 = displayToNatural(dragStart.x, dragStart.y);
+    const p2 = displayToNatural(cur.x, cur.y);
+    pendingLine = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
+    drawLine(pendingLine);
+  });
+
+  window.addEventListener("mouseup", function () {
+    dragging = false;
+  });
+
+  saveBtn.addEventListener("click", function () {
+    if (!pendingLine) {
+      statusEl.textContent = "Trazá una línea antes de guardar.";
+      return;
+    }
+    statusEl.textContent = "Guardando...";
+    fetch(`/cameras/${encodeURIComponent(cameraName)}/line`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(pendingLine),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.ok) throw new Error(data.error || "error desconocido");
+        currentLine = pendingLine;
+        editing = false;
+        pendingLine = null;
+        editBtn.style.display = "inline-block";
+        saveBtn.style.display = "none";
+        cancelBtn.style.display = "none";
+        statusEl.textContent = "Línea guardada. Reiniciando la cámara...";
+        lineInfo.textContent = `Línea de conteo: ${data.line_start} → ${data.line_end}`;
+        drawLine(currentLine);
+        setTimeout(() => { statusEl.textContent = ""; }, 4000);
+      })
+      .catch((err) => {
+        statusEl.textContent = "Error guardando: " + err.message;
+      });
+  });
+})();
+</script>
+
+{% endblock %}

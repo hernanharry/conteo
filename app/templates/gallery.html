@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Galería{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h2>Galería de objetos detectados</h2>
+  <form method="get" class="filter-bar">
+    <label>Clase
+      <select name="class" onchange="this.form.submit()">
+        <option value="">Todas</option>
+        {% for c in classes %}
+          <option value="{{ c }}" {{ 'selected' if c == selected_class else '' }}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Cámara
+      <select name="camera" onchange="this.form.submit()">
+        <option value="">Todas</option>
+        {% for cam in cameras %}
+          <option value="{{ cam.name }}" {{ 'selected' if cam.name == selected_camera else '' }}>{{ cam.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Desde
+      <input type="date" name="date_from" value="{{ date_from or '' }}" onchange="this.form.submit()">
+    </label>
+    <label>Hasta
+      <input type="date" name="date_to" value="{{ date_to or '' }}" onchange="this.form.submit()">
+    </label>
+  </form>
+
+  <div class="export-bar">
+    <a href="{{ url_for('export_csv', class=selected_class, camera=selected_camera, date_from=date_from, date_to=date_to) }}" class="btn-secondary">⬇ Exportar CSV</a>
+    <a href="{{ url_for('export_zip', class=selected_class, camera=selected_camera, date_from=date_from, date_to=date_to) }}" class="btn-secondary">⬇ Exportar imágenes (ZIP)</a>
+    <small class="muted">El ZIP exporta hasta 500 imágenes según los filtros actuales.</small>
+  </div>
+
+  {% if not detections %}
+    <p class="muted">Todavía no hay objetos detectados con estos filtros.</p>
+  {% else %}
+    <div class="gallery-grid">
+      {% for d in detections %}
+      <figure class="gallery-item">
+        <img src="{{ url_for('gallery_image', path=d.image_path) }}" alt="{{ d.class_name }}" loading="lazy">
+        <figcaption>
+          <strong>{{ d.class_name }}</strong><br>
+          {{ d.camera_name }}<br>
+          <span class="muted">{{ d.timestamp[:19].replace('T', ' ') }}</span>
+        </figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>
+
+{% endblock %}
