@@ -1,0 +1,15 @@
+# Servidor RTSP sintetico para pruebas (auxiliar, NO es la app).
+# Uso: docker compose -f scripts/rtsp-test-source/compose-test-rtsp.yml up -d
+name: rtsp-test-source
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: mediamtx-test
+    restart: unless-stopped
+    ports:
+      - "8554:8554"   # RTSP (default mediaMTX)
+      - "8889:8889"   # WebRTC (no necesario para RTSP; por comodidad)
+    command: >-
+      mediamtx
+      --rtspAddress 0.0.0.0:8554
