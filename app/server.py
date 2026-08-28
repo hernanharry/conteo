@@ -1,5 +1,7 @@
+import atexit
 import csv
 import io
+import logging
 import os
 import zipfile
 
@@ -17,10 +19,18 @@ from db import (
     update_camera_line,
 )
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
 app = Flask(__name__)
 
 init_db()
 camera_manager.start_all()
+# Shutdown limpio (F1): al salir el proceso se detienen todos los workers y el
+# watchdog con join acotado -- sin threads huerfanos ni conteos por escribir.
+atexit.register(camera_manager.stop_all)
 
 
 @app.route("/")

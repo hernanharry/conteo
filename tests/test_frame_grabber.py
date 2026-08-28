@@ -1,0 +1,94 @@
+"""Tests de _FrameGrabber (F1): ciclo de frames, reconexion y stop.
+
+Usan FakeCap (sin cv2): corren siempre en local.
+"""
+
+import threading
+import time
+
+from camera_worker import _FrameGrabber
+from testutil import FakeCap, wait_until
+
+
+def _make_grabber(cap_factory, reconnect_delay=0.05, url="rtsp://fake"):
+    def factory(_url):
+        return cap_factory
+
+    return _FrameGrabber(url, cap_factory=factory, reconnect_delay=reconnect_delay)
+
+
+def test_lee_frames_y_marca_connected():
+    cap = FakeCap(frames=[object(), object(), object()])
+    g = _make_grabber(cap)
+
+    assert g.connected is False
+    g.start()
+    try:
+        assert wait_until(lambda: g.frame_count > 0)
+        assert g.connected is True
+        assert g.get_latest_frame() is not None
+        assert g.last_frame_time is not None
+    finally:
+        g.stop()
+        g.join(timeout=2.0)
+    assert cap.released is True
+
+
+def test_sin_frames_nunca_marca_connected():
+    cap = FakeCap(always_fail=True)
+    g = _make_grabber(cap)
+    g.start()
+    try:
+        # deja correr unos ciclos de reconnect(rapida)
+        time.sleep(0.3)
+        assert g.connected is False
+        assert g.reconnect_count > 0
+        assert g.last_error is not None
+    finally:
+        g.stop()
+        g.join(timeout=2.0)
+
+
+def test_reconecta_luego_de_fallos_iniciales():
+    # falla en las primeras 2 lecturas y despues entrega frames
+    cap = FakeCap(frames=[object()], fail_for=2)
+    g = _make_grabber(cap)
+    g.start()
+    try:
+        assert wait_until(lambda: g.connected is True)
+        assert wait_until(lambda: g.frame_count > 0)
+        assert g.reconnect_count >= 1
+    finally:
+        g.stop()
+        g.join(timeout=2.0)
+
+
+def test_stop_detiene_el_hilo_y_libera_la_captura():
+    cap = FakeCap(frames=[object()])
+    g = _make_grabber(cap)
+    g.start()
+    assert wait_until(lambda: g.frame_count > 0)
+    g.stop()
+    g.join(timeout=2.0)
+    assert not g.is_alive()
+    assert cap.released is True
+
+
+def test_la_apertura_que_falla_reintenta():
+    # cap_factory que lanza (no pudo abrir la captura): debe reintentar
+    attempts = {"n": 0}
+
+    def factory(_url):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OSError("no se pudo abrir")
+        return FakeCap(frames=[object()])
+
+    g = _FrameGrabber("rtsp://fake", cap_factory=factory, reconnect_delay=0.05)
+    g.start()
+    try:
+        assert wait_until(lambda: g.connected is True)
+        assert attempts["n"] >= 2
+    finally:
+        g.stop()
+        g.join(timeout=2.0)
