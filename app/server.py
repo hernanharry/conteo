@@ -128,6 +128,33 @@ def stream(name):
     return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+@app.route("/api/perf")
+def api_perf():
+    """Contadores de rendimiento por camara (F2, solo lectura, para benchmarks).
+
+    frames_skipped = frames_available - frames_processed: frames nuevos que el
+    bucle de deteccion no alcanzo a procesar (FRAME_SKIP o espera por el lock
+    de inferencia). El vivo no se ve afectado: corre en su propio hilo."""
+    perf = {}
+    for c in list_cameras():
+        w = camera_manager.get_worker(c["name"])
+        available = getattr(w, "frames_available", 0)
+        processed = getattr(w, "frames_processed", 0)
+        count = getattr(w, "inference_count", 0)
+        total_ms = getattr(w, "inference_total_ms", 0.0)
+        perf[c["name"]] = {
+            "status": getattr(w, "status", "detenida"),
+            "frames_available": available,
+            "frames_processed": processed,
+            "frames_skipped": available - processed,
+            "inference_count": count,
+            "inference_last_ms": round(getattr(w, "last_inference_ms", 0.0), 3),
+            "inference_total_ms": round(total_ms, 3),
+            "inference_avg_ms": round(total_ms / count, 3) if count else 0.0,
+        }
+    return jsonify(perf)
+
+
 @app.route("/gallery")
 def gallery():
     class_filter = request.args.get("class") or None

@@ -80,6 +80,30 @@ _model_lock = threading.Lock()
 _shared_model = None
 _torch_threads_configured = False
 
+# F2: todas las camaras comparten un unico modelo en memoria. Este lock
+# serializa la INFERENCIA (a diferencia de _model_lock, que solo protege la
+# carga lazy): garantiza UN forward YOLO a la vez en todo el proceso. Sin el,
+# N camaras x TORCH_THREADS threads sobresuscriben la CPU y el throughput se
+# degrada de forma no determinista. ByteTrack/LineZone son por camara y NO se
+# serializan aca -- solo el forward comparte estado.
+_INFERENCE_LOCK = threading.Lock()
+
+
+def _run_inference(model, frame, *, classes, conf, imgsz):
+    """Ejecuta el forward YOLO sobre el modelo compartido de forma single-flight.
+
+    Devuelve el objeto Result sin indexar (el caller decide que alumbrar). El
+    lock se libera con `with` aunque el modelo lance una excepcion, para que
+    ningun worker quede trabado esperando un forward que nunca termina."""
+    with _INFERENCE_LOCK:
+        return model(
+            frame,
+            verbose=False,
+            classes=classes,
+            conf=conf,
+            imgsz=imgsz,
+        )
+
 
 def get_model():
     """Un solo modelo YOLO cargado en memoria, compartido por todas las camaras.
@@ -263,9 +287,10 @@ class _DetectorContext:
     supervision / yolov8. Los efectos secundarios (galeria, webhook/telegram,
     persistencia) se inyectan como callbacks para mantener el contexto puro."""
 
-    def __init__(self, cfg, model_fn=get_model):
+    def __init__(self, cfg, model_fn=get_model, infer_fn=None):
         self.cfg = cfg
         self.model_fn = model_fn
+        self._infer = infer_fn or _run_inference
         self.model = None
         self.tracker = None
         self.line_zone = None
@@ -278,6 +303,11 @@ class _DetectorContext:
         self.detections = None
         self.labels = []
         self.ready = False
+        # F2: contadores minimos de inferencia (ms por forward completado,
+        # incluye la espera por el lock si otras camaras estan infiriendo).
+        self.inference_count = 0
+        self.inference_total_ms = 0.0
+        self.last_inference_ms = 0.0
         # callbacks inyectados por el worker (None = efecto deshabilitado)
         self.save_crop = None
         self.send_report = None
@@ -307,13 +337,19 @@ class _DetectorContext:
     def process(self, frame):
         import supervision as sv
 
-        results = self.model(
+        t0 = time.perf_counter()
+        results = self._infer(
+            self.model,
             frame,
-            verbose=False,
             classes=self.cfg.classes or None,
             conf=self.cfg.conf_threshold,
             imgsz=IMGSZ,
         )[0]
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.inference_count += 1
+        self.inference_total_ms += elapsed_ms
+        self.last_inference_ms = elapsed_ms
+
         detections = sv.Detections.from_ultralytics(results)
         detections = self.tracker.update_with_detections(detections)
         self.line_zone.trigger(detections)
@@ -472,6 +508,16 @@ class CameraWorker(threading.Thread):
         self.last_frame_time = time.time()
         self.last_detection_time = time.time()
 
+        # F2: contadores de rendimiento (frames nuevos observados vs frames
+        # procesados; frames_skipped = frames_available - frames_processed).
+        # El tiempo de inferencia se lee del procesador real (0 si es un
+        # doble de tests que no toca YOLO).
+        self.frames_available = 0
+        self.frames_processed = 0
+        self.inference_count = 0
+        self.inference_total_ms = 0.0
+        self.last_inference_ms = 0.0
+
     # ---------- API publica (UI / CameraManager) ----------
 
     def stop(self):
@@ -591,13 +637,22 @@ class CameraWorker(threading.Thread):
             self._set_state(STATE_RUNNING)
             self.last_detection_time = time.time()
             frame_counter += 1
+            self.frames_available += 1
 
             if FRAME_SKIP > 1 and frame_counter % FRAME_SKIP != 0:
                 continue
 
+            self.frames_processed += 1
             processor.process(frame)
             self.in_count = processor.in_count
             self.out_count = processor.out_count
+            # heartbeat de deteccion al COMPLETAR la inferencia (no al
+            # encolarla): si un worker queda esperando el lock de inferencia,
+            # el watchdog sigue viendo que no avanza y puede reiniciarlo.
+            self.last_detection_time = time.time()
+            self.inference_count = getattr(processor, "inference_count", 0)
+            self.inference_total_ms = getattr(processor, "inference_total_ms", 0.0)
+            self.last_inference_ms = getattr(processor, "last_inference_ms", 0.0)
             self._set_last_detections(processor.detections, processor.labels)
 
     def _shutdown(self, name, processor):
