@@ -76,7 +76,13 @@ def live(name):
     cam = get_camera(name)
     if not cam:
         abort(404)
-    return render_template("live.html", camera=cam)
+    # Resolucion nativa del frame: la UI calibra la linea de conteo en las
+    # coordenadas que usa LineZone (frame nativo), no en las del JPEG del vivo
+    # (que puede venir re-escalado a LIVE_MAX_WIDTH).
+    worker = camera_manager.get_worker(name)
+    frame_w = getattr(worker, "last_frame_w", 0) or 0
+    frame_h = getattr(worker, "last_frame_h", 0) or 0
+    return render_template("live.html", camera=cam, frame_w=frame_w, frame_h=frame_h)
 
 
 @app.route("/cameras/<name>/line", methods=["POST"])
@@ -151,6 +157,8 @@ def api_perf():
             "inference_last_ms": round(getattr(w, "last_inference_ms", 0.0), 3),
             "inference_total_ms": round(total_ms, 3),
             "inference_avg_ms": round(total_ms / count, 3) if count else 0.0,
+            "in": getattr(w, "in_count", 0),
+            "out": getattr(w, "out_count", 0),
         }
     return jsonify(perf)
 

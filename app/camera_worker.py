@@ -42,6 +42,12 @@ TELEGRAM_SEND_PHOTO = os.getenv("TELEGRAM_SEND_PHOTO", "true").lower() == "true"
 GALLERY_DIR = os.getenv("GALLERY_DIR", "/app/data/gallery")
 RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY_SECONDS", "5"))
 
+# Diagnostico de conteo (COUNTING_DEBUG=1): loguea por frame procesado cuantas
+# detecciones hay, sus tracker_ids, si el bbox esta de un lado u otro de la
+# linea (signo del cross product del centro) y cuantos cruces registro LineZone.
+# Solo lectura: jamas altera el comportamiento del conteo.
+COUNTING_DEBUG = os.getenv("COUNTING_DEBUG", "0").lower() in ("1", "true", "yes")
+
 # Cuantos threads de CPU puede usar PyTorch por inferencia (se aplica de forma
 # Lazy al cargar el modelo, no al importar este modulo).
 TORCH_THREADS = int(os.getenv("TORCH_THREADS", "4"))
@@ -352,7 +358,9 @@ class _DetectorContext:
 
         detections = sv.Detections.from_ultralytics(results)
         detections = self.tracker.update_with_detections(detections)
-        self.line_zone.trigger(detections)
+        crossed_in, crossed_out = self.line_zone.trigger(detections)
+        if COUNTING_DEBUG:
+            self._log_counting_debug(detections, crossed_in, crossed_out)
         self.in_count = self.base_in + self.line_zone.in_count
         self.out_count = self.base_out + self.line_zone.out_count
 
@@ -428,6 +436,55 @@ class _DetectorContext:
                 self.persist_counts(self.cfg.name, self.in_count, self.out_count)
         except Exception as exc:
             logger.warning("[%s] error persistiendo conteos: %s", self.cfg.name, exc)
+
+    def _log_counting_debug(self, detections, crossed_in, crossed_out):
+        """Diagnostico opt-in (COUNTING_DEBUG=1): vuelca por frame el estado
+        que determina si LineZone cuenta o no. Nunca altera el conteo.
+
+        Util para explicar un "cruce visible pero 0 conteo":
+        - ids con muchos cambios entre frames => ByteTrack re-ida al objeto
+          (LineZone solo cuenta un cruce si el MISMO tracker_id cambia de lado).
+        - lados que nunca cambian => el bbox nunca cruzo la linea real en las
+          coordenadas del frame nativo (problema de calibracion/escala de linea).
+        - cruces>0 y tot que sube => el conteo SI ocurrio (revisar la UI).
+        """
+        try:
+            import numpy as np
+
+            line = np.array([self.cfg.line_start, self.cfg.line_end], dtype=float)
+            sx, sy = line[0]
+            ex, ey = line[1]
+            xyxy = detections.xyxy
+            if len(xyxy) == 0:
+                return
+            cx = (xyxy[:, 0] + xyxy[:, 2]) / 2.0
+            cy = (xyxy[:, 1] + xyxy[:, 3]) / 2.0
+            cross = (cx - sx) * (ey - sy) - (cy - sy) * (ex - sx)
+            sides = ["+" if c >= 0 else "-" for c in cross]
+
+            ids = []
+            tid_arr = detections.tracker_id
+            for i in range(len(xyxy)):
+                t = tid_arr[i] if tid_arr is not None else None
+                ids.append(None if t is None else int(t))
+
+            crossed_ids = []
+            for i in range(len(xyxy)):
+                if crossed_in[i] or crossed_out[i]:
+                    crossed_ids.append((ids[i], "in" if crossed_in[i] else "out"))
+
+            logger.info(
+                "[%s] counting dets=%d ids=%s lados=%s cruces=%s linezone(posicion nativa)=(%s)->(%s)",
+                self.cfg.name,
+                len(xyxy),
+                ids,
+                sides,
+                crossed_ids or "ninguno",
+                self.cfg.line_start,
+                self.cfg.line_end,
+            )
+        except Exception as exc:  # noqa: BLE001 - el diagnostico nunca rompe el conteo
+            logger.warning("[%s] error logueando diagnostico de conteo: %s", self.cfg.name, exc)
 
 
 class _InjectedContext:
@@ -517,6 +574,13 @@ class CameraWorker(threading.Thread):
         self.inference_count = 0
         self.inference_total_ms = 0.0
         self.last_inference_ms = 0.0
+
+        # Tamanio (w, h) del ultimo frame NATIVO visto por el render loop.
+        # La UI lo usa para calibrar la linea de conteo en coordenadas del
+        # frame real (el JPEG del vivo puede venir re-escalado a LIVE_MAX_WIDTH
+        # y la linea debe trazarse en la MISMA escala que usa LineZone).
+        self.last_frame_w = 0
+        self.last_frame_h = 0
 
     # ---------- API publica (UI / CameraManager) ----------
 
@@ -713,6 +777,8 @@ class CameraWorker(threading.Thread):
 
                 last_rendered_frame = frame
                 self.last_frame_time = time.time()
+                self.last_frame_w = frame.shape[1]
+                self.last_frame_h = frame.shape[0]
 
                 detections, labels = self._get_last_detections()
                 annotated = frame.copy()

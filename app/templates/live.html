@@ -4,6 +4,10 @@
 
 <section class="card">
   <h2>{{ camera.name }}</h2>
+  <p class="muted">
+    Entradas: <b id="cntIn">0</b> · Salidas: <b id="cntOut">0</b> ·
+    <span id="cntStatus"></span>
+  </p>
   <p class="muted" id="lineInfo">
     Línea de conteo: {{ camera.line_start }} → {{ camera.line_end }} · Confianza mínima: {{ camera.conf_threshold }}
   </p>
@@ -35,6 +39,14 @@
   const lineInfo = document.getElementById("lineInfo");
   const baseStreamUrl = {{ url_for('stream', name=camera.name) | tojson }};
 
+  // Resolucion NATIVA del frame de deteccion (la que usa LineZone). El JPEG
+  // del vivo puede venir re-escalado a LIVE_MAX_WIDTH: si usamos sus pixeles
+  // como referencia, la linea trazada/guardada queda en escala equivocada y
+  // LineZone cuenta en otra posicion. Con la nativa, overlay y linea real
+  // coinciden y lo que se dibuja se guarda en coordenadas del frame real.
+  const nativeW = {{ frame_w | tojson }};
+  const nativeH = {{ frame_h | tojson }};
+
   // Un stream MJPEG que se corta a medio camino no siempre avisa con un
   // evento claro (varia por navegador) -- en vez de tratar de detectar el
   // corte, se fuerza una reconexion periodica. Si el stream seguia sano no
@@ -47,6 +59,30 @@
 
   img.addEventListener("error", reconnectStream);
   setInterval(reconnectStream, RECONNECT_INTERVAL_MS);
+
+  const cntIn = document.getElementById("cntIn");
+  const cntOut = document.getElementById("cntOut");
+  const cntStatus = document.getElementById("cntStatus");
+  let lastCounts = null;
+
+  function refreshCounts() {
+    fetch("/api/perf")
+      .then((r) => r.json())
+      .then((perf) => {
+        const p = perf[cameraName];
+        if (!p) return;
+        cntIn.textContent = p.in;
+        cntOut.textContent = p.out;
+        if (lastCounts && (p.in !== lastCounts.in || p.out !== lastCounts.out)) {
+          cntStatus.textContent = " ↑ conteo actualizado";
+          setTimeout(() => { cntStatus.textContent = ""; }, 3000);
+        }
+        lastCounts = { in: p.in, out: p.out };
+      })
+      .catch(() => {});
+  }
+  setInterval(refreshCounts, 2000);
+  refreshCounts();
 
   let naturalW = null, naturalH = null;
   let currentLine = parseServerLine();
@@ -112,8 +148,13 @@
 
   img.addEventListener("load", function () {
     if (!naturalW && img.naturalWidth) {
-      naturalW = img.naturalWidth;
-      naturalH = img.naturalHeight;
+      if (nativeW > 0 && nativeH > 0) {
+        naturalW = nativeW;
+        naturalH = nativeH;
+      } else {
+        naturalW = img.naturalWidth;
+        naturalH = img.naturalHeight;
+      }
     }
     syncOverlaySize();
   });

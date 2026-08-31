@@ -94,6 +94,36 @@ Click en el nombre de la cámara desde la tabla, o directo a
 `/live/<nombre>`. Es un stream MJPEG (cajas + ID de tracking + línea de
 conteo dibujadas en tiempo real) — liviano, sin plugins.
 
+En la misma página se muestran los contadores de entradas/salidas
+actualizados en vivo y un botón para **editar la línea de conteo**: hacé
+click y arrastrá sobre el video para trazarla, y guardá. La línea se
+interpreta en las coordenadas del frame original de la cámara (aunque el
+vivo se vea re-escalado), así que lo que ves en pantalla es exactamente la
+línea por la que cuenta.
+
+### Diagnóstico cuando "cruza pero no cuenta"
+
+Si un objeto cruza la línea visible pero el contador queda en 0, activá el
+log de diagnóstico y repetí la prueba:
+
+```bash
+COUNTING_DEBUG=1 docker compose up -d --build
+docker compose logs -f object-tracker
+```
+
+Cada frame logueado incluye `dets`, `ids` (tracker_ids de ByteTrack),
+`lados` (signo del centro del bbox respecto de la línea) y `cruces`.
+- Si `ids` cambia de frame en frame → ByteTrack re-identifica al objeto y
+  LineZone no puede atribuirle el cruce (el contador exige el **mismo** id
+  de un lado y del otro de la línea).
+- Si `lados` nunca cambia → el bbox jamás cruzó la línea real: revisá que la
+  línea esté donde cruza el objeto.
+- Si `cruces` avanza pero la página no → el conteo ocurre (revisá la tabla
+  de cámaras / `/api/perf`).
+
+Los tests `tests/test_line_zone_f3.py` (marca `docker`) reproducen estos
+casos sobre la primitiva de conteo real.
+
 ## 6. Galería
 
 Pestaña **Galería**: cada vez que aparece un objeto nuevo (un ID de
