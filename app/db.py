@@ -49,6 +49,18 @@ def init_db():
         if "cumulative_out" not in existing_cols:
             conn.execute("ALTER TABLE cameras ADD COLUMN cumulative_out INTEGER NOT NULL DEFAULT 0")
 
+        # F4.3: indices minimos sobre detections para las consultas reales de
+        # la app (list_detections filtra por camera_name/class_name/timestamp y
+        # ordena por id DESC; distinct_classes por class_name). Son IF NOT
+        # EXISTS: idempotentes sobre instalaciones existentes y no rompen nada.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_detections_camera ON detections(camera_name, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_detections_class ON detections(class_name, id DESC)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_detections_ts ON detections(timestamp)")
+
 
 def list_cameras():
     with get_conn() as conn:

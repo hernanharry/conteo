@@ -34,6 +34,31 @@ def test_respetar_init_idempotente(db):
     assert count == 0
 
 
+def test_init_crea_indices_de_detections(db):
+    """F4.3: init_db crea los indices minimos sobre detections que cubren las
+    consultas reales (filtro por camera/class/timestamp + ORDER BY id DESC)."""
+    with db.get_conn() as conn:
+        idxs = {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+    assert {
+        "idx_detections_camera",
+        "idx_detections_class",
+        "idx_detections_ts",
+    } <= idxs
+
+
+def test_indices_idempotentes(db):
+    """F4.3: volver a llamar init_db no duplica ni rompe los indices."""
+    db.init_db()
+    db.init_db()
+    with db.get_conn() as conn:
+        idxs = {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+    assert len(idxs & {"idx_detections_camera", "idx_detections_class", "idx_detections_ts"}) == 3
+
+
 def test_add_y_get_camera_roundtrip(db, camera_dict):
     db.add_camera(camera_dict)
     cam = db.get_camera(camera_dict["name"])
