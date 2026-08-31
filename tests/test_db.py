@@ -150,12 +150,57 @@ def test_distinct_classes(db):
     assert db.distinct_classes() == ["auto", "persona"]
 
 
-def test_delete_camera_deja_detecciones_huerfanas(db, camera_dict):
-    """GAP-DB/seguridad: sin FK, borrar una camara deja filas huerfanas en
-    detections (integridad referencial para F4)."""
+def test_delete_camera_limpia_detecciones_y_archivos(db, camera_dict, tmp_path):
+    """F4.2: borrar una camara elimina sus detecciones y sus recortes en
+    disco, y no toca los de otras camaras."""
+    import os
+
     db.add_camera(camera_dict)
-    db.add_detection("entrada-principal", "persona", 1, "2026-08-28T10:00:00.000", "/tmp/1.jpg")
+    gal = str(tmp_path / "gallery")
+    p1 = os.path.join(gal, "persona", "entrada-principal_20260828_000001_1.jpg")
+    p2 = os.path.join(gal, "auto", "entrada-principal_20260828_000002_2.jpg")
+    p3 = os.path.join(gal, "persona", "otra-cam_20260828_000003_3.jpg")
+    for p in (p1, p2, p3):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write("x")
+    db.add_detection("entrada-principal", "persona", 1, "2026-08-28T10:00:00.000", p1)
+    db.add_detection("entrada-principal", "auto", 2, "2026-08-28T10:00:00.000", p2)
+    db.add_detection("otra-cam", "persona", 3, "2026-08-28T10:00:00.000", p3)
+
     db.delete_camera("entrada-principal")
-    rows = db.list_detections(camera_name="entrada-principal")
-    assert len(rows) == 1  # las filas quedan: comportamiento actual
+
+    # filas y archivos de la camara borrada desaparecen...
+    assert db.list_detections(camera_name="entrada-principal") == []
+    assert not os.path.exists(p1)
+    assert not os.path.exists(p2)
+    # ...y se preservan los de la otra camara
+    assert len(db.list_detections(camera_name="otra-cam")) == 1
+    assert os.path.exists(p3)
     assert db.get_camera("entrada-principal") is None
+
+
+def test_delete_camera_tolera_archivo_faltante(db, camera_dict, tmp_path):
+    """F4.2: si un recorte ya no existe en disco, el borrado no falla."""
+    import os
+
+    db.add_camera(camera_dict)
+    gal = str(tmp_path / "gallery")
+    p1 = os.path.join(gal, "persona", "entrada-principal_20260828_000001_1.jpg")  # no se crea
+    db.add_detection("entrada-principal", "persona", 1, "2026-08-28T10:00:00.000", p1)
+    db.delete_camera("entrada-principal")
+    assert db.list_detections(camera_name="entrada-principal") == []
+    assert db.get_camera("entrada-principal") is None
+
+
+def test_delete_camera_sin_detecciones(db, camera_dict):
+    """F4.2: borrar una camara sin detecciones no rompe nada."""
+    db.add_camera(camera_dict)
+    db.delete_camera(camera_dict["name"])
+    assert db.get_camera(camera_dict["name"]) is None
+
+
+def test_delete_camera_idempotente(db):
+    """F4.2: borrar una camara inexistente es inofensivo."""
+    db.delete_camera("no-existe")
+    assert db.get_camera("no-existe") is None

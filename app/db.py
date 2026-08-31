@@ -73,8 +73,29 @@ def add_camera(data):
 
 
 def delete_camera(name):
+    """Elimina la camara y su registro asociado (F4.2):
+
+    - la fila de `cameras`;
+    - las filas de `detections` de esa camara (antes quedaban huerfanas, sin FK);
+    - los archivos fisicos de los recortes de galeria (`image_path`) de esa
+      camara.
+
+    Todo dentro del mismo `_lock`. El borrado fisico de archivos es tolerante
+    a errores (un archivo ya no existente no rompe el borrado)."""
+    paths_to_delete = []
     with _lock, get_conn() as conn:
+        rows = conn.execute(
+            "SELECT image_path FROM detections WHERE camera_name=?", (name,)
+        ).fetchall()
+        paths_to_delete = [r["image_path"] for r in rows]
+        conn.execute("DELETE FROM detections WHERE camera_name=?", (name,))
         conn.execute("DELETE FROM cameras WHERE name=?", (name,))
+    for path in paths_to_delete:
+        try:
+            os.remove(path)
+        except OSError:
+            # archivo ya inexistente o sin permisos: no bloquea el borrado
+            pass
 
 
 def update_camera_line(name, line_start, line_end):
