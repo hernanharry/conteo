@@ -14,9 +14,36 @@ hacia que un test que dejaba cuarentena ensuciara a los siguientes) y usan
 FakeWorker donde el resultado depende de que el worker muera a tiempo.
 """
 
+import threading
+
 import pytest
 
 from testutil import FakeWorker
+
+
+def _reap_watchdog_threads():
+    """Une hilos watchdog daemon residuales (start_all los levanta) para que no
+    ejecuten _watchdog_pass() durante otro test. No toca la logica del
+    watchdog ni de production: solo espera a que el hilo termine tras senalar
+    el stop (reset_for_tests ya setea el evento)."""
+    for t in threading.enumerate():
+        if getattr(t, "name", None) == "watchdog" and t.is_alive():
+            t.join(timeout=2.0)
+
+
+@pytest.fixture(autouse=True)
+def _manager_limpio():
+    """Aislamiento del estado global de CameraManager entre tests del archivo
+    (mismo patron que `_manager_limpio` en test_camera_manager_f1.py):
+    reset_for_tests() antes y despues + exhumar hilos watchdog residuales, de
+    modo que un test no interfiera con el siguiente ni con el watchdog."""
+    import camera_manager
+
+    _reap_watchdog_threads()
+    camera_manager.reset_for_tests()
+    yield
+    camera_manager.reset_for_tests()
+    _reap_watchdog_threads()
 
 
 def _load_camera_manager():

@@ -32,7 +32,20 @@ def test_line_zone_cuenta_cruce_con_mismo_tracker_id():
 @pytest.mark.docker
 def test_line_zone_cuenta_el_mismo_tracker_una_sola_vez():
     """Oscilar alrededor de la linea con el mismo id no infla el contador:
-    cuenta un cruce por transicion, no por frame."""
+    cuenta una vez por TRANSICION de lado, no por frame.
+
+    Semantica real de supervision 0.24.0 (supervision/detection/line_zone.py,
+    metodo trigger): LineZone cuenta cambios de lado del tracker, no cruces por
+    ciclo.
+
+    - La PRIMERA deteccion de un tracker solo inicializa tracker_state (NO suma).
+    - Cada transicion posterior de lado suma in O out (una sola direccion por
+      cambio de lado; jamas ambos en un mismo ciclo).
+    - Por eso, con el primer estado sembrado en "abajo", N ciclos abajo->arriba
+      producen in=N y out=N-1: la primera deteccion "abajo" del ciclo 1 consume
+      el contador de inicializacion en vez de sumar un "out".
+
+    Este test valida exactamente eso (in=3, out=2), no una simetria in==out."""
     import numpy as np
     import supervision as sv
 
@@ -45,7 +58,7 @@ def test_line_zone_cuenta_el_mismo_tracker_una_sola_vez():
         zone.trigger(arriba)
 
     assert zone.in_count == 3
-    assert zone.out_count == 3
+    assert zone.out_count == 2
 
 
 @pytest.mark.docker
