@@ -175,6 +175,86 @@ def test_distinct_classes(db):
     assert db.distinct_classes() == ["auto", "persona"]
 
 
+# ---------- F4.5: retencion de galeria (opt-in) ----------
+
+
+def _touch_file(path):
+    import os
+
+    if isinstance(path, (list, tuple)):
+        for p in path:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as f:
+                f.write("x")
+    else:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("x")
+
+
+def test_retencion_desactivada_por_defecto_no_borra(db):
+    """F4.5: con max_files=0 y max_age_days=0 (default) NO se borra nada."""
+    db.add_detection("cam-a", "persona", 1, "2026-08-28T10:00:00.000", "/tmp/1.jpg")
+    db.add_detection("cam-a", "auto", 2, "2026-08-28T11:00:00.000", "/tmp/2.jpg")
+    n = db.enforce_gallery_retention(max_files=0, max_age_days=0)
+    assert n == 0
+    assert len(db.list_detections()) == 2
+
+
+def test_retencion_max_files_borra_mas_antiguos(db, tmp_path):
+    """F4.5: max_files=N conserva los N mas recientes (mayor id) y borra los
+    mas antiguos (menor id), junto con su archivo en disco."""
+    import os
+
+    gal = str(tmp_path / "gallery")
+    paths = [os.path.join(gal, "persona", f"cam-a_{i}.jpg") for i in range(5)]
+    _touch_file(paths)
+    for i, p in enumerate(paths):
+        db.add_detection("cam-a", "persona", i, f"2026-08-28T10:00:0{i}.000", p)
+
+    n = db.enforce_gallery_retention(max_files=3, max_age_days=0)
+    assert n == 2
+    remaining = {int(d["tracker_id"]) for d in db.list_detections()}
+    assert remaining == {2, 3, 4}  # los 3 mas recientes
+    assert not os.path.exists(paths[0])
+    assert not os.path.exists(paths[1])
+    assert os.path.exists(paths[2])
+
+
+def test_retencion_max_age_borra_viejos(db, tmp_path):
+    """F4.5: max_age_days borra los registros mas antiguos que la edad, junto
+    con su archivo en disco."""
+    import os
+
+    gal = str(tmp_path / "gallery")
+    old = os.path.join(gal, "persona", "cam-a_old.jpg")
+    recent = os.path.join(gal, "persona", "cam-a_recent.jpg")
+    _touch_file([old, recent])
+    db.add_detection("cam-a", "persona", 1, "2020-01-01T10:00:00.000", old)  # > 1 dia
+    db.add_detection("cam-a", "persona", 2, "2050-12-31T10:00:00.000", recent)
+
+    n = db.enforce_gallery_retention(max_files=0, max_age_days=1)
+    assert n == 1
+    assert {int(d["tracker_id"]) for d in db.list_detections()} == {2}
+    assert not os.path.exists(old)
+    assert os.path.exists(recent)
+
+
+def test_retencion_max_day_con_fecha_futura_no_borra(db):
+    """F4.5: un registro con timestamp futuro NO se borra por antiguedad."""
+    db.add_detection("cam-a", "persona", 1, "2050-12-31T10:00:00.000", "/tmp/1.jpg")
+    n = db.enforce_gallery_retention(max_files=0, max_age_days=100)
+    assert n == 0
+    assert len(db.list_detections()) == 1
+
+
+def test_retencion_tolera_archivo_faltante(db, tmp_path):
+    """F4.5: si el archivo ya no existe en disco, la limpieza no falla."""
+    db.add_detection("cam-a", "persona", 1, "2026-08-28T10:00:00.000", "/tmp/no-existe.jpg")
+    n = db.enforce_gallery_retention(max_files=0, max_age_days=0)
+    assert n == 0
+
+
 def test_delete_camera_limpia_detecciones_y_archivos(db, camera_dict, tmp_path):
     """F4.2: borrar una camara elimina sus detecciones y sus recortes en
     disco, y no toca los de otras camaras."""

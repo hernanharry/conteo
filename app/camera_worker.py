@@ -21,7 +21,7 @@ import time
 from datetime import datetime
 
 from camera_config import parse_camera_config
-from db import add_detection, update_camera_counts
+from db import add_detection, ensure_gallery_retention_worker, update_camera_counts
 
 # F3: las notificaciones (n8n/Telegram) se ejecutan en un worker desacoplado
 # (hilo aparte cola acotada). Este modulo solo importa stdlib, no bloquea.
@@ -843,6 +843,12 @@ class CameraWorker(threading.Thread):
         try:
             if crop is None or getattr(crop, "size", 0) == 0:
                 return
+            # F4.5: la retencion corre en un worker DAEMON en background
+            # (db.GalleryRetentionWorker), NUNCA en el hilo de deteccion.
+            # Aqui solo se garantiza que el worker este arrancado (idempotente
+            # y NO BLOQUEANTE): no se ejecuta ningun SELECT/DELETE/commit/
+            # os.remove de retencion en este hilo.
+            ensure_gallery_retention_worker()
             import cv2
 
             class_dir = os.path.join(GALLERY_DIR, class_name)

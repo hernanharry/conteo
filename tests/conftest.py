@@ -48,6 +48,20 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_docker)
 
 
+@pytest.fixture(autouse=True)
+def _no_gallery_retention_orphan_threads():
+    """F4.5: garantiza que el worker de retencion (daemon global de db.py) no
+    quede corriendo entre tests. Tambien restaura la config de retencion a los
+    defaults (0/0) para que un test que cambie db.GALLERY_MAX_* no contamine a
+    los demas."""
+    import db
+
+    yield
+    db.GALLERY_MAX_FILES = 0
+    db.GALLERY_MAX_AGE_DAYS = 0
+    db.reset_gallery_retention_for_tests()
+
+
 @pytest.fixture()
 def db(tmp_path, monkeypatch):
     """BD SQLite aislada por test: cada test usa su propia base temporal."""

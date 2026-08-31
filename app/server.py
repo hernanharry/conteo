@@ -17,6 +17,7 @@ from db import (
     init_db,
     list_cameras,
     list_detections,
+    stop_gallery_retention_worker,
     update_camera_line,
 )
 
@@ -34,6 +35,8 @@ camera_manager.start_all()
 # join acotado -- sin threads huerfanos ni conteos por escribir.
 atexit.register(camera_manager.stop_all)
 atexit.register(notifications.stop_all)
+# F4.5: detiene el worker de retencion de galeria (daemon) con join acotado.
+atexit.register(stop_gallery_retention_worker)
 
 
 @app.route("/")
