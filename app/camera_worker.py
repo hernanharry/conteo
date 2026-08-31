@@ -23,8 +23,11 @@ from datetime import datetime
 from camera_config import parse_camera_config
 from db import add_detection, update_camera_counts
 
-logger = logging.getLogger(__name__)
+# F3: las notificaciones (n8n/Telegram) se ejecutan en un worker desacoplado
+# (hilo aparte cola acotada). Este modulo solo importa stdlib, no bloquea.
+import notifications
 
+logger = logging.getLogger(__name__)
 # Timeout de socket para RTSP (en segundos). Sin esto, cv2.VideoCapture puede
 # quedarse colgado para siempre esperando datos si la camara/red tiene un
 # hipo, sin devolver error ni activar la reconexion.
@@ -35,10 +38,6 @@ os.environ.setdefault(
 )
 
 MODEL_PATH = os.getenv("MODEL_PATH", "yolov8n.pt")
-WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-TELEGRAM_SEND_PHOTO = os.getenv("TELEGRAM_SEND_PHOTO", "true").lower() == "true"
 GALLERY_DIR = os.getenv("GALLERY_DIR", "/app/data/gallery")
 RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY_SECONDS", "5"))
 
@@ -131,30 +130,6 @@ def get_model():
                     _torch_threads_configured = True
             _shared_model = YOLO(MODEL_PATH)
         return _shared_model
-
-
-def notify_telegram(text, photo_bytes=None):
-    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
-        return
-    base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-    try:
-        import requests
-
-        if photo_bytes and TELEGRAM_SEND_PHOTO:
-            requests.post(
-                f"{base}/sendPhoto",
-                data={"chat_id": TELEGRAM_CHAT_ID, "caption": text},
-                files={"photo": ("frame.jpg", photo_bytes, "image/jpeg")},
-                timeout=10,
-            )
-        else:
-            requests.post(
-                f"{base}/sendMessage",
-                data={"chat_id": TELEGRAM_CHAT_ID, "text": text},
-                timeout=10,
-            )
-    except Exception as exc:
-        logger.warning("Error enviando a Telegram: %s", exc)
 
 
 def _default_cap(url):
@@ -318,6 +293,10 @@ class _DetectorContext:
         self.save_crop = None
         self.send_report = None
         self.persist_counts = None
+        # F3: protege el chequeo horario cuando lo invocan dos hilos a la vez
+        # (hilo de deteccion + HorologIO de respaldo cuando la camara no da
+        # frames). Idempotente por hora, pero evita doble reporte/reset.
+        self._report_lock = threading.Lock()
 
     def setup(self, worker=None, initial_in=0, initial_out=0):
         import supervision as sv
@@ -400,22 +379,37 @@ class _DetectorContext:
         self.detections = detections
         self.labels = labels
 
-        current_hour = datetime.now().strftime("%Y-%m-%d %H:00")
-        if current_hour != self.last_report_hour:
-            if self.last_report_hour is not None:
-                in_c = self.line_zone.in_count
-                out_c = self.line_zone.out_count
-                if self.send_report is not None:
-                    self.send_report(self.cfg.name, self.last_report_hour, in_c, out_c)
-                self.base_in += in_c
-                self.base_out += out_c
-                self.line_zone.in_count = 0
-                self.line_zone.out_count = 0
-                if self.persist_counts is not None:
-                    self.persist_counts(self.cfg.name, self.base_in, self.base_out)
-            self.last_report_hour = current_hour
+        self.check_hour()
 
         return detections
+
+    def check_hour(self):
+        """Rutina horaria: cuando cambia la hora emite el reporte, acumula los
+        contadores de la hora en base y los resetea. F3 lo invocan dos sitios:
+
+        1. El hilo de DETECCION (desde process(), por cada frame procesado).
+        2. El HorologIO de notifications.py (respaldo independiente de frames),
+           para que un reporte horario no se pierda si la camara esta caida y
+           no llegan frames en el cambio de hora.
+
+        Es idempotente por hora (guardado por last_report_hour) y esta
+        protegido por _report_lock, asi que aunque ambos hilos lo llamen solo
+        se emite/resetea una vez por hora."""
+        with self._report_lock:
+            current_hour = datetime.now().strftime("%Y-%m-%d %H:00")
+            if current_hour != self.last_report_hour:
+                if self.last_report_hour is not None:
+                    in_c = self.line_zone.in_count
+                    out_c = self.line_zone.out_count
+                    if self.send_report is not None:
+                        self.send_report(self.cfg.name, self.last_report_hour, in_c, out_c)
+                    self.base_in += in_c
+                    self.base_out += out_c
+                    self.line_zone.in_count = 0
+                    self.line_zone.out_count = 0
+                    if self.persist_counts is not None:
+                        self.persist_counts(self.cfg.name, self.base_in, self.base_out)
+                self.last_report_hour = current_hour
 
     def flush(self):
         """Vacia tracks activos a galeria y persiste el conteo final. Solo si
@@ -507,6 +501,10 @@ class _InjectedContext:
         self.processed_frames += 1
         return self.detections
 
+    def check_hour(self):
+        # doble deterministico: no toca ninguna logica horaria
+        pass
+
     def flush(self):
         pass
 
@@ -582,7 +580,23 @@ class CameraWorker(threading.Thread):
         self.last_frame_w = 0
         self.last_frame_h = 0
 
+        # F3: referencia al procesador (para que el HorologIO de respaldo
+        # pueda invocar check_hour()) y bandera de registro en el reloj.
+        self._processor = None
+        self._hour_registered = False
+
     # ---------- API publica (UI / CameraManager) ----------
+
+    def on_hour_tick(self):
+        """Invocado por el HorologIO (notifications) cuando cambia la hora,
+        como respaldo del cambio de hora cuando la camara esta sin frames.
+        Delega en el procesador (idempotente por hora) y jamas lanza: un error
+        del reloj no debe tumbar la camara."""
+        try:
+            if self._processor is not None:
+                self._processor.check_hour()
+        except Exception as exc:
+            logger.warning("[%s] error en on_hour_tick: %s", self.camera.get("name", "?"), exc)
 
     def stop(self):
         self._stop_event.set()
@@ -677,6 +691,15 @@ class CameraWorker(threading.Thread):
         # setup (modelo/tracker/linea) puede fallar (ej. no cargo el modelo):
         # la excepcion sube a run() y el worker pasa a "error".
         processor.setup(self, initial_in=self._base_in, initial_out=self._base_out)
+        self._processor = processor
+
+        # F3: registrar el hook horario (respaldo del reporte cuando la camara
+        # no da frames). El reloj es thread-safe y multipla camaras.
+        try:
+            notifications.get_hour_clock().register(name, self.on_hour_tick)
+            self._hour_registered = True
+        except Exception as exc:
+            logger.warning("[%s] no se pudo registrar en reloj horario: %s", name, exc)
 
         self._set_state(STATE_CONNECTING)
         grabber = self._start_grabber(cfg.rtsp_url)
@@ -722,6 +745,15 @@ class CameraWorker(threading.Thread):
     def _shutdown(self, name, processor):
         """Cierre garantizado (finally): detener grabber/render, vaciar la
         galeria y persistir conteos. Nunca sobrescribe el estado "error"."""
+        # F3: desregistrar del reloj horario para no dejar callbacks huerfanos.
+        if self._hour_registered:
+            try:
+                notifications.get_hour_clock().unregister(name)
+            except Exception as exc:
+                logger.warning("[%s] error desregistrando del reloj horario: %s", name, exc)
+            self._hour_registered = False
+        self._processor = None
+
         if self.get_state() != STATE_FAILED:
             self._set_state(STATE_STOPPING)
         self._stop_event.set()
@@ -824,22 +856,18 @@ class CameraWorker(threading.Thread):
             logger.warning("Error guardando recorte de galeria: %s", exc)
 
     def _send_hourly_report(self, name, hour_label, in_count, out_count):
-        payload = {
-            "camera": name,
-            "hour": hour_label,
-            "in_count": in_count,
-            "out_count": out_count,
-        }
-        if WEBHOOK_URL:
-            try:
-                import requests
+        """Handler invocado desde el hilo de DETECCION cuando cambia la hora:
+        SOLO construye y enquelea el trabajo de notificacion (no hace requests).
 
-                requests.post(WEBHOOK_URL, json=payload, timeout=5)
-            except Exception as exc:
-                logger.warning("[%s] Error enviando webhook a n8n: %s", name, exc)
-
-        text = (
-            f"Camara {name} - reporte {hour_label}\n"
-            f"Entradas: {in_count} | Salidas: {out_count}"
+        F3: las requests de n8n/Telegram las ejecuta el worker desacoplado de
+        notifications.py. Si la cola esta llena y se descarta, es solo la
+        notificacion la que se pierde (el conteo ya quedo persistido y los
+        contadores de la hora se acumularon en base_in/base_out), de modo que
+        el pipeline de deteccion nunca espera ni se bloquea por red."""
+        notifications.enqueue_hourly_report(
+            name,
+            hour_label,
+            in_count,
+            out_count,
+            jpeg=self.get_latest_jpeg(),
         )
-        notify_telegram(text, self.get_latest_jpeg())

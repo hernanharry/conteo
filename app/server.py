@@ -8,6 +8,7 @@ import zipfile
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, url_for
 
 import camera_manager
+import notifications
 from db import (
     add_camera,
     delete_camera,
@@ -28,9 +29,11 @@ app = Flask(__name__)
 
 init_db()
 camera_manager.start_all()
-# Shutdown limpio (F1): al salir el proceso se detienen todos los workers y el
-# watchdog con join acotado -- sin threads huerfanos ni conteos por escribir.
+# Shutdown limpio (F1+F3): al salir el proceso se detienen los workers de
+# camara, el watchdog y el worker de notificaciones (cola+reloj horario) con
+# join acotado -- sin threads huerfanos ni conteos por escribir.
 atexit.register(camera_manager.stop_all)
+atexit.register(notifications.stop_all)
 
 
 @app.route("/")
