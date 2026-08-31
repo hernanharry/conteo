@@ -117,9 +117,14 @@ def list_detections(class_name=None, camera_name=None, date_from=None, date_to=N
         conds.append("timestamp >= ?")
         params.append(date_from)
     if date_to:
-        # date_to viene como YYYY-MM-DD; incluye todo ese dia
+        # date_to viene como YYYY-MM-DD; incluye todo ese dia HASTA el ultimo
+        # microsegundo. Los timestamps se guardan con microsegundos
+        # (datetime.now().isoformat()), asi que un tope de "T23:59:59" excluiria
+        # TODO [23:59:59.000, 23:59:59.999] (BUG-DB-001).
+        if len(date_to) <= 10:
+            date_to = f"{date_to}T23:59:59.999999"
         conds.append("timestamp <= ?")
-        params.append(f"{date_to}T23:59:59")
+        params.append(date_to)
     if conds:
         query += " WHERE " + " AND ".join(conds)
     query += " ORDER BY id DESC LIMIT ?"

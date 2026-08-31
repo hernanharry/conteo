@@ -105,18 +105,34 @@ def test_list_detections_filtro_clase_y_camara(db):
 
 
 def test_list_detections_fecha_hasta_incluye_dia_completo(db):
-    """GAP-DB (xfail = bug CONFIRMADO por F0): list_detections construye el
-    limite como f"{date_to}T23:59:59"; como los timestamps se guardan con
-    microsegundos, la comparacion lexicografica <= excluye TODA deteccion de
-    [23:59:59.000, 23:59:59.999] del dia elegido. El test fija el
-    comportamiento DESEADO (incluir el ultimo segundo); falla hoy y servira
-    de criterio cuando se corrija en F4."""
+    """F4.1 (BUG-DB-001): date_to='YYYY-MM-DD' debe incluir el ultimo segundo
+    del dia completo, incluyendo los microsegundos (los timestamps se guardan
+    con isoformat()). Antes el tope "T23:59:59" excluia
+    [23:59:59.000, 23:59:59.999]."""
     db.add_detection("cam-a", "persona", 1, "2026-08-27T23:59:58.999", "/tmp/1.jpg")
     db.add_detection("cam-a", "persona", 2, "2026-08-28T23:59:59.900", "/tmp/2.jpg")
     db.add_detection("cam-a", "persona", 3, "2026-08-29T00:00:00.100", "/tmp/3.jpg")
     rows = db.list_detections(date_from="2026-08-28", date_to="2026-08-28")
-    pytest.xfail("GAP-DB: filtro date_to pierde el ultimo segundo del dia (microsegundos), F4")
     assert len(rows) == 1  # solo la del dia 28
+
+
+def test_list_detections_fecha_hasta_limite_microsegundos(db):
+    """F4.1 (BUG-DB-001): los valores de borde del ultimo segundo entran y el
+    primer microsegundo del dia siguiente sale."""
+    db.add_detection("cam-a", "p", 1, "2026-08-28T23:59:59.999998", "/tmp/1.jpg")
+    db.add_detection("cam-a", "p", 2, "2026-08-28T23:59:59.999999", "/tmp/2.jpg")
+    db.add_detection("cam-a", "p", 3, "2026-08-29T00:00:00.000000", "/tmp/3.jpg")
+    rows = db.list_detections(date_from="2026-08-28", date_to="2026-08-28")
+    assert {int(r["tracker_id"]) for r in rows} == {1, 2}
+
+
+def test_list_detections_fecha_hasta_con_hora_no_se_rompe(db):
+    """F4.1: si date_to ya incluye hora (uso no actual de la app), no se
+    sobreescribe el formato."""
+    db.add_detection("cam-a", "p", 1, "2026-08-28T12:00:00.000", "/tmp/1.jpg")
+    db.add_detection("cam-a", "p", 2, "2026-08-28T13:00:00.000", "/tmp/2.jpg")
+    rows = db.list_detections(date_to="2026-08-28T12:59:59.999999")
+    assert {int(r["tracker_id"]) for r in rows} == {1}
 
 
 def test_list_detections_order_y_limit(db):
