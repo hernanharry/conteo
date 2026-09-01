@@ -136,6 +136,32 @@ Las imágenes quedan en `./data/gallery/<clase>/` en el host (fuera del
 contenedor), y el índice en `./data/app.db` (SQLite) — ambos persisten
 entre reinicios gracias al volumen `./data:/app/data`.
 
+### Retención automática (opt-in)
+
+Por defecto la galería crece sin límite. Si querés acotar el disco, `.env`
+acepta dos opciones (0 = sin retención):
+
+- `GALLERY_MAX_FILES`: deja como mucho N registros/imágenes (borra los más
+  antiguos).
+- `GALLERY_MAX_AGE_DAYS`: borra los recortes más antiguos que N días.
+- `GALLERY_CLEANUP_INTERVAL_MIN`: cada cuántos minutos el worker revisa la
+  galería.
+
+La limpieza corre en un **worker daemon en background** (nunca en el hilo de
+detección) y borra tanto la fila del índice como el archivo físico.
+
+### Borrar una cámara
+
+Al borrar una cámara desde `index.html` se eliminan también su fila de la
+tabla de cámaras, las detecciones asociadas **y** los recortes `.jpg` de esa
+cámara en la galería.
+
+### Exportación ZIP
+
+`/gallery/export.zip` mantiene el tope de 500 imágenes por descarga; el ZIP
+se genera en un archivo temporal en disco (no en memoria) para no consumir
+RAM de golpe, y se elimina tras enviarse.
+
 ## 7. Notificaciones (n8n / Telegram)
 
 Con `N8N_WEBHOOK_URL` completo en `.env`, cada cámara manda un POST por

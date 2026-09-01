@@ -94,7 +94,7 @@ La red externa `vision-net` en `docker-compose.yml` debe apuntar a la red Docker
 | `flask` | Servidor web y templates Jinja2 |
 | `requests` | Webhook n8n y API de Telegram |
 
-Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`, `IMGSZ`, `N8N_WEBHOOK_URL`, `TELEGRAM_*`, `WATCHDOG_*`, `LIVE_*`, `DB_PATH`, `GALLERY_DIR`).
+Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`, `IMGSZ`, `N8N_WEBHOOK_URL`, `TELEGRAM_*`, `WATCHDOG_*`, `LIVE_*`, `DB_PATH`, `GALLERY_DIR`, `GALLERY_MAX_FILES`, `GALLERY_MAX_AGE_DAYS`, `GALLERY_CLEANUP_INTERVAL_MIN`).
 
 ## Convenciones Importantes
 
@@ -112,3 +112,10 @@ Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`,
 - El reporte horario resetea los contadores de la hora pero acumula en `cumulative_in` / `cumulative_out` en SQLite.
 - Para mejor rendimiento: usar subflujo RTSP (`Channels/102`), subir `FRAME_SKIP`, bajar `IMGSZ` o usar `yolov8n.pt`. Para más precisión: `yolov8m.pt` (requiere más CPU o GPU con `nvidia-container-toolkit`).
 - La exportación ZIP de galería tiene tope de 500 imágenes por petición; CSV hasta 100.000 registros.
+- **F4 (persistencia/gallery hardening):**
+  - `list_detections` con `date_to='YYYY-MM-DD'` incluye el día completo hasta `23:59:59.999999` (BUG-DB-001).
+  - `delete_camera` elimina también las detecciones y los `.jpg` de esa cámara (integridad referencial).
+  - `detections` tiene índices mínimos (`camera_name,id`, `class_name,id`, `timestamp`).
+  - La retención de galería (`GALLERY_MAX_FILES` / `GALLERY_MAX_AGE_DAYS`, 0 = inactiva) corre en `GalleryRetentionWorker` (daemon en background), nunca en el hilo de detección. `_save_gallery_crop` solo hace `ensure_gallery_retention_worker()` (idempotente/no bloqueante).
+  - `export_zip` genera el ZIP en un archivo temporal en disco y lo sirve por generador (sin pico de RAM), eliminando el temporal al terminar.
+  - **Concurrencia SQLite:** `db.py` conserva el lock global `_lock` solo en escrituras + una conexión por operación. F4.4 midió (ver `scripts/benchmark_sqlite.py`) que el cuello real es la fsync/commit por `add_detection` en el hilo de detección (fuera del alcance F4), NO el lock. **No** se introducen WAL/batching/connection-pooling sin un benchmark que lo justifique.
