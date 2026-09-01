@@ -56,6 +56,24 @@ chat de Telegram, qué modelo YOLO usar. Los datos específicos de cada
 cámara (URL RTSP, línea de conteo, clases a detectar) se cargan después
 desde la web, no acá.
 
+### Autenticación (opcional)
+
+Si además definís `WEB_USER` y `WEB_PASSWORD` en `.env`, la UI, el vivo y las
+exportaciones quedan protegidos por **HTTP Basic Auth** (F5). Sin esas
+variables la app corre abierta, como siempre. Para el navegador es
+transparente (te pide usuario/contraseña la primera vez). Se recomienda
+habilitarla en producción:
+
+```bash
+WEB_USER=admin
+WEB_PASSWORD=cambia-este-password
+# Opcional: rutas que quedan públicas aun con auth (separadas por coma)
+# WEB_PUBLIC_PATHS=/stream,/gallery/image
+```
+
+El health check `/api/health` queda público siempre, para que el `HEALTHCHECK`
+de Docker funcione sin credenciales.
+
 Si tu n8n corre en Docker y querés que el webhook le llegue por nombre de
 servicio, poné el nombre real de esa red Docker en
 `docker-compose.yml` → `networks.vision-net.name` (`docker network ls | grep n8n`
@@ -192,18 +210,31 @@ mandale un mensaje, y consultá
 - Usar el subflujo (`Channels/102`) en vez del canal principal reduce
   mucho el uso de CPU si no necesitás alta resolución para detectar.
 
+## 9. Diagnóstico y salud
+
+- **`/api/perf`**: contadores de rendimiento por cámara (frames procesados,
+  frames saltados, tiempo de inferencia p50/p95, contadores in/out). Solo
+  lectura, pensado para benchmarks.
+- **`/api/health`**: estado de la app para el orquestador (F7). Responde 200
+  con JSON (uptime, versión de Python, hilos vivos, estado y contadores por
+  cámara) cuando la BD responde; 503 si no. Es público (sin auth) para que
+  el `HEALTHCHECK` del contenedor lo use.
+- **`/stream/<nombre>`**: headers anti-cache + `X-Accel-Buffering: no` (F6)
+  para que ningún proxy bufferice el MJPEG.
+
 ## Estructura del proyecto
 
 ```
 hikvision-object-tracker/
 ├── app/
-│   ├── server.py           # rutas Flask: cámaras, vivo, galería
+│   ├── server.py           # rutas Flask: cámaras, vivo, galería, health
+│   ├── auth.py             # HTTP Basic Auth opcional (F5)
 │   ├── camera_manager.py   # arranca/detiene el worker de cada cámara
 │   ├── camera_worker.py    # loop de detección+tracking+galería por cámara
 │   ├── db.py                # SQLite: cámaras registradas y detecciones
 │   ├── templates/           # index.html, live.html, gallery.html
 │   └── static/style.css
-├── Dockerfile
+├── Dockerfile              # torch pinneado + HEALTHCHECK (F8)
 ├── docker-compose.yml
 ├── requirements.txt
 ├── .env.example

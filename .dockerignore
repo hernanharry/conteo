@@ -1,0 +1,22 @@
+# --- no copiar al build context (Docker) ---
+.git
+.gitignore
+
+# secretos y datos del runtime: jamas entran a la imagen
+.env
+data/
+
+# entornos virtuales y artefactos de Python
+.venv
+.venv-target
+__pycache__
+*.pyc
+.pytest_cache
+
+# tests y herramientas de desarrollo no van a la imagen de produccion
+tests/
+docs/
+scripts/
+
+# archivos locales
+*.log

@@ -94,7 +94,19 @@ La red externa `vision-net` en `docker-compose.yml` debe apuntar a la red Docker
 | `flask` | Servidor web y templates Jinja2 |
 | `requests` | Webhook n8n y API de Telegram |
 
-Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`, `IMGSZ`, `N8N_WEBHOOK_URL`, `TELEGRAM_*`, `WATCHDOG_*`, `LIVE_*`, `DB_PATH`, `GALLERY_DIR`, `GALLERY_MAX_FILES`, `GALLERY_MAX_AGE_DAYS`, `GALLERY_CLEANUP_INTERVAL_MIN`).
+Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`, `IMGSZ`, `N8N_WEBHOOK_URL`, `TELEGRAM_*`, `WATCHDOG_*`, `LIVE_*`, `DB_PATH`, `GALLERY_DIR`, `GALLERY_MAX_FILES`, `GALLERY_MAX_AGE_DAYS`, `GALLERY_CLEANUP_INTERVAL_MIN`). Además (F5/F6): `WEB_USER`/`WEB_PASSWORD`/`WEB_PUBLIC_PATHS` (auth opcional), `STREAM_POLL_INTERVAL` (polling del MJPEG).
+
+## Fases implementadas
+
+- **F0** baseline: tests, smoke RTSP y `docs/baseline.md` (sin tocar `app/`).
+- **F1** robustez: lifecycle de workers, DI inyectable, watchdog con anti-lockup.
+- **F2** concurrencia: inferencia YOLO serializada sobre el modelo compartido + contadores `/api/perf`.
+- **F3** notificaciones: n8n/Telegram en worker desacoplado (cola acotada), HourClock de respaldo.
+- **F4** SQLite/galería/eventos: F4.1 BUG-DB-001, F4.2 integridad borrado, F4.3 índices, F4.4 benchmark SQLite, F4.5 retención de galería (worker daemon), F4.6 export ZIP por archivo temporal, F4.7 docs.
+- **F5** seguridad: HTTP Basic Auth opcional (`web.properties`: `WEB_USER`/`WEB_PASSWORD`). `auth.py` solo stdlib; comparación en tiempo constante. `/api/health` queda público siempre (orquestador). Ver `tests/test_auth_f5.py`.
+- **F6** streaming: MJPEG con headers anti-cache + `X-Accel-Buffering: no`, `STREAM_POLL_INTERVAL`, cierre limpio por GeneratorExit. Ver `tests/test_stream_f6.py`.
+- **F7** observabilidad: `/api/health` (uptime, python, threads, estado por cámara, 503 si la BD cae). Ver `tests/test_health_f7.py`.
+- **F8** Docker/producción: torch/torchvision pinneados (GAP-PROD-02), `HEALTHCHECK` contra `/api/health`, `.dockerignore` (no copia `.env`/`data/`), `stop_grace_period: 30s` para el shutdown limpio, red compose standalone (`external: false` con `name: n8n_default`).
 
 ## Convenciones Importantes
 
