@@ -18,6 +18,7 @@ from flask import (
     url_for,
 )
 
+import auth
 import camera_manager
 import notifications
 from db import (
@@ -38,6 +39,20 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
+
+
+@app.before_request
+def _require_auth():
+    """F5: if WEB_USER/WEB_PASSWORD estan configuradas, exige HTTP Basic Auth
+    en todas las rutas (excepto static y las de WEB_PUBLIC_PATHS). Si no hay
+    credenciales, la auth esta inactiva y todo sigue publico."""
+    if not auth.authenticate(request):
+        return (
+            "Autenticacion requerida",
+            401,
+            {"WWW-Authenticate": auth.WWW_AUTHENTICATE},
+        )
+
 
 init_db()
 camera_manager.start_all()
