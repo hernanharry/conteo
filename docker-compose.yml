@@ -1,5 +1,6 @@
-version: "3.8"
-
+# La clave `version` es obsoleta en Compose v2 (docker compose) y genera un
+# warning en CLI; se omite. `docker run --compatibility` (legacy) no es un
+# escenario soportado.
 services:
   object-tracker:
     build: .

@@ -38,13 +38,44 @@ function Check($label, $url, [int]$ExpectedStatus = 200) {
     }
 }
 
+# F6: el stream MJPEG es infinito por diseno; Invoke-WebRequest queda
+# bufferizando hasta el cierre o el timeout. Se lee solo el primer fragmento
+# del body (boundary + JPEG) y se cierra la conexion.
+function CheckStream($label, $url) {
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($url)
+        $req.Timeout = 10000
+        $req.ReadWriteTimeout = 10000
+        $req.AllowAutoRedirect = $false
+        foreach ($k in $headers.Keys) { $req.Headers[$k] = $headers[$k] }
+        $resp = $req.GetResponse()
+        $bytes = [byte[]]::new(8192)
+        $stream = $resp.GetResponseStream()
+        $n = $stream.Read($bytes, 0, $bytes.Length)
+        $resp.Close()
+        $ct = [string]$resp.ContentType
+        # Busca el SOI de un JPEG (FF D8) en el primer fragmento del body.
+        $jpeg = $false
+        for ($i = 0; $i -lt $n - 1; $i++) {
+            if ($bytes[$i] -eq 0xFF -and $bytes[$i + 1] -eq 0xD8) { $jpeg = $true; break }
+        }
+        $ok = ($ct -match "multipart/x-mixed-replace" -and $jpeg)
+        $detail = if ($ok) { "$ct, jpg+$n-bytes" } else { if ($n -eq 0) { "empty" } else { "sin SOI" } }
+        Write-Host ("{0,-45} {1}  [{2}]" -f $label, $(if ($ok) { "OK" } else { "FAIL" }), $detail)
+        return $ok
+    } catch {
+        Write-Host ("{0,-45} FAIL  [{1}]" -f $label, $_.Exception.Message)
+        return $false
+    }
+}
+
 $all = $true
 # F7: el health check debe responder 200 (es publico aun con auth).
 $all = (Check "1. Health check (/api/health) ..." "$BaseUrl/api/health") -and $all
 $all = (Check "2. App arranca (/) ............." "$BaseUrl/") -and $all
 $all = (Check "3. Galeria inicializada ........." "$BaseUrl/gallery") -and $all
 $all = (Check "4. Pagina de vivo ..............." "$BaseUrl/live/$Camera") -and $all
-$all = (Check "5. Stream MJPEG responde ......." "$BaseUrl/stream/$Camera") -and $all
+$all = (CheckStream "5. Stream MJPEG responde ......." "$BaseUrl/stream/$Camera") -and $all
 
 try {
     $idx = (Invoke-WebRequest -Uri "$BaseUrl/" -Headers $headers -UseBasicParsing -TimeoutSec 10).Content

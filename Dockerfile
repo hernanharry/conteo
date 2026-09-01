@@ -15,7 +15,14 @@ WORKDIR /app
 # variantes +cpu de esas versiones.
 COPY requirements.txt .
 RUN pip install --no-cache-dir torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    # ultralytics declara opencv-python (>=4.6.0) como dependencia dura, por lo
+    # que pip instala AMBAS variantes (GUI + headless), ambas escriben en el
+    # MISMO directorio site-packages/cv2 y la GUI 5.x sobre-escribe la headless.
+    # Se quita la GUI y se reinstala a la fuerza la headless (compatible con el
+    # entorno de desarrollo, pinneada en requirements) para restaurar el paquete.
+    && pip uninstall -y opencv-python \
+    && pip install --no-cache-dir --force-reinstall --no-deps opencv-python-headless==4.10.0.84
 
 COPY app/ .
 
