@@ -70,6 +70,13 @@ class FakeWorker:
         self.joined = False
         self._config_error = False
         self._stuck = False
+        self._latest_jpeg = None
+
+    def get_latest_jpeg(self):
+        return self._latest_jpeg
+
+    def set_latest_jpeg(self, jpeg_bytes):
+        self._latest_jpeg = jpeg_bytes
 
     def start(self):
         pass

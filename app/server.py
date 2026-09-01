@@ -40,6 +40,10 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
+# F6: intervalo (s) de polling del generador MJPEG cuando no hay frame nuevo.
+# Regula el ancho de banda de "keep-alive" minimo del flujo.
+STREAM_POLL_INTERVAL = float(os.getenv("STREAM_POLL_INTERVAL", "0.05"))
+
 
 @app.before_request
 def _require_auth():
@@ -141,6 +145,12 @@ def update_line_route(name):
 
 @app.route("/stream/<name>")
 def stream(name):
+    """Stream MJPEG en vivo (F6): anotado en tiempo real.
+
+    - Nunca se cachea (MJPEG es por definicion efimero): Cache-Control no-store.
+    - X-Accel-Buffering: no -> impide que un proxy (nginx) bufferiza el flujo.
+    - El generador courtejos cuando el cliente corta la conexion (GeneratorExit)
+      en vez de dejar el hilo dando vueltas para siempre."""
     worker = camera_manager.get_worker(name)
     if not worker:
         abort(404)
@@ -148,6 +158,7 @@ def stream(name):
     def generate():
         import time
 
+        poll_interval = STREAM_POLL_INTERVAL
         last_sent = None
         try:
             while True:
@@ -157,13 +168,21 @@ def stream(name):
                 if frame is not None and frame is not last_sent:
                     last_sent = frame
                     yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
-                time.sleep(0.05)
+                time.sleep(poll_interval)
         except GeneratorExit:
             # el cliente (navegador) corto la conexion -- salir prolijo en
             # vez de dejar el hilo dando vueltas para siempre
             return
 
-    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    return Response(
+        generate(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.route("/api/perf")
