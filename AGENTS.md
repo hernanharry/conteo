@@ -94,7 +94,7 @@ La red externa `vision-net` en `docker-compose.yml` debe apuntar a la red Docker
 | `flask` | Servidor web y templates Jinja2 |
 | `requests` | Webhook n8n y API de Telegram |
 
-Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`, `IMGSZ`, `N8N_WEBHOOK_URL`, `TELEGRAM_*`, `WATCHDOG_*`, `LIVE_*`, `DB_PATH`, `GALLERY_DIR`, `GALLERY_MAX_FILES`, `GALLERY_MAX_AGE_DAYS`, `GALLERY_CLEANUP_INTERVAL_MIN`). Además (F5/F6): `WEB_USER`/`WEB_PASSWORD`/`WEB_PUBLIC_PATHS` (auth opcional), `STREAM_POLL_INTERVAL` (polling del MJPEG).
+Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`, `IMGSZ`, `TORCH_THREADS`, `GRABBER_MAX_FPS`, `N8N_WEBHOOK_URL`, `TELEGRAM_*`, `WATCHDOG_*`, `LIVE_*`, `DB_PATH`, `GALLERY_DIR`, `GALLERY_MAX_FILES`, `GALLERY_MAX_AGE_DAYS`, `GALLERY_CLEANUP_INTERVAL_MIN`). Además (F5/F6): `WEB_USER`/`WEB_PASSWORD`/`WEB_PUBLIC_PATHS` (auth opcional), `STREAM_POLL_INTERVAL` (polling del MJPEG).
 
 ## Fases implementadas
 
@@ -107,6 +107,7 @@ Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`,
 - **F6** streaming: MJPEG con headers anti-cache + `X-Accel-Buffering: no`, `STREAM_POLL_INTERVAL`, cierre limpio por GeneratorExit. Ver `tests/test_stream_f6.py`.
 - **F7** observabilidad: `/api/health` (uptime, python, threads, estado por cámara, 503 si la BD cae). Ver `tests/test_health_f7.py`.
 - **F8** Docker/producción: torch/torchvision pinneados (GAP-PROD-02), `HEALTHCHECK` contra `/api/health`, `.dockerignore` (no copia `.env`/`data/`), `stop_grace_period: 30s` para el shutdown limpio, red compose standalone (`external: false` con `name: n8n_default`).
+- **F9** tuning de detección (hardware débil): benchmark real en docs/detection-tuning.md. Recomendado para CPUs de 2 núcleos: `IMGSZ=960` + `conf_threshold=0.25` + `TORCH_THREADS=2` + `GRABBER_MAX_FPS=8` (nuevo tope de decodificación) + `LIVE_STREAM_FPS`/`LIVE_MAX_WIDTH` bajos. OpenVINO/ONNX se midieron MÁS lentos que torch nativo en esta máquina (NO agregar al contenedor sin re-benchmark).
 
 ## Convenciones Importantes
 

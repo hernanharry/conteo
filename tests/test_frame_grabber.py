@@ -92,3 +92,34 @@ def test_la_apertura_que_falla_reintenta():
     finally:
         g.stop()
         g.join(timeout=2.0)
+
+
+def test_grabber_max_fps_espacia_las_lecturas(monkeypatch):
+    # GRABBER_MAX_FPS>0 ralentiza la decodificacion para liberar CPU en
+    # maquinas debiles: entre lecturas exitosas debe pasar ~1/GRABBER_MAX_FPS.
+    # El test solo verifica el espacio minimo (holgado a 0.025s) para no
+    # destinar en CI: lo que nunca debe pasar es que NO haya espacio.
+    monkeypatch.setattr("camera_worker.GRABBER_MAX_FPS", 8.0)  # gap esperado ~0.125s
+    cap = FakeCap(frames=[object()] * 20)
+    g = _make_grabber(cap)
+    stamps = []
+
+    original_set = g._set_connected
+
+    def patched_set_connected(value):
+        if value and g.frame_count > 0 and len(stamps) < 4:
+            stamps.append(time.time())
+        original_set(value)
+
+    g._set_connected = patched_set_connected  # type: ignore[assignment]
+    g.start()
+    try:
+        assert wait_until(lambda: len(stamps) >= 4, timeout=3.0)
+    finally:
+        g.stop()
+        g.join(timeout=2.0)
+
+    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+    assert gaps, "deberia haber al menos 2 lecturas espaciadas"
+    assert all(g >= 0.02 for g in gaps), f"gaps demasiado cortos: {gaps}"
+    assert g.frame_count <= len(stamps) + 1

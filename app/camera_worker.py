@@ -41,6 +41,13 @@ MODEL_PATH = os.getenv("MODEL_PATH", "yolov8n.pt")
 GALLERY_DIR = os.getenv("GALLERY_DIR", "/app/data/gallery")
 RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY_SECONDS", "5"))
 
+# Tope de fps al que el grabber decodifica el RTSP (0 = sin tope, usa el ritmo
+# de la camara/stream). En CPUs debiles (2 nucleos fisicos), decodificar H264
+# 1080p a 25 fps consume CPU significativa que compite con la inferencia YOLO:
+# bajar el tope (~5-10) libera esa CPU para deteccion, a costa de una frescura
+# de frame ligeramente menor en el vivo y en la deteccion.
+GRABBER_MAX_FPS = float(os.getenv("GRABBER_MAX_FPS", "0"))
+
 # Diagnostico de conteo (COUNTING_DEBUG=1): loguea por frame procesado cuantas
 # detecciones hay, sus tracker_ids, si el bbox esta de un lado u otro de la
 # linea (signo del cross product del centro) y cuantos cruces registro LineZone.
@@ -197,6 +204,7 @@ class _FrameGrabber(threading.Thread):
 
     def run(self):
         cap = None
+        last_read_time = None
         try:
             while not self._stop_event.is_set():
                 if cap is None:
@@ -235,6 +243,17 @@ class _FrameGrabber(threading.Thread):
                 self.last_frame_time = time.time()
                 with self._lock:
                     self._frame = frame
+
+                # GRABBER_MAX_FPS: ralentiza la decodificacion (no el render)
+                # para liberar CPU para la inferencia en maquinas debiles. El
+                # sleep corre contra el stop_event para no atrasar el shutdown.
+                if GRABBER_MAX_FPS > 0:
+                    min_gap = 1.0 / GRABBER_MAX_FPS
+                    elapsed = 0.0 if last_read_time is None else time.time() - last_read_time
+                    if elapsed < min_gap:
+                        if self._stop_event.wait(min_gap - elapsed):
+                            break
+                last_read_time = time.time()
         finally:
             if cap is not None:
                 try:
