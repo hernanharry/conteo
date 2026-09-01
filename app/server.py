@@ -3,9 +3,20 @@ import csv
 import io
 import logging
 import os
+import tempfile
 import zipfile
 
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, url_for
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
 
 import camera_manager
 import notifications
@@ -238,19 +249,45 @@ def export_zip():
         class_name=class_filter, camera_name=camera_filter, date_from=date_from, date_to=date_to, limit=500
     )
 
-    mem = io.BytesIO()
-    with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as zf:
-        for d in detections:
-            path = d["image_path"]
-            if os.path.isfile(path):
-                arcname = f"{d['class_name']}/{os.path.basename(path)}"
-                zf.write(path, arcname)
-    mem.seek(0)
-    return send_file(
-        mem,
+    # F4.6: se escribe a un archivo temporal en disco (no a un BytesIO en RAM)
+    # para evitar el pico de memoria de volcar hasta 500 imagenes en un solo
+    # zip. Mismo tope de 500. La respuesta se sirve por un generador que lee
+    # el archivo y lo elimina en `finally` DESPUES de cerrar el handle (asi
+    # funciona tambien en Windows, donde un archivo abierto no puede borrarse).
+    fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for d in detections:
+                path = d["image_path"]
+                if os.path.isfile(path):
+                    arcname = f"{d['class_name']}/{os.path.basename(path)}"
+                    zf.write(path, arcname)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    def generate():
+        try:
+            with open(tmp_path, "rb") as fh:
+                while True:
+                    chunk = fh.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    return Response(
+        generate(),
         mimetype="application/zip",
-        as_attachment=True,
-        download_name="detecciones.zip",
+        headers={"Content-Disposition": "attachment; filename=detecciones.zip"},
     )
 
 
