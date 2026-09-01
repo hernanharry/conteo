@@ -3,7 +3,10 @@ import csv
 import io
 import logging
 import os
+import platform
 import tempfile
+import threading
+import time
 import zipfile
 
 from flask import (
@@ -43,6 +46,9 @@ app = Flask(__name__)
 # F6: intervalo (s) de polling del generador MJPEG cuando no hay frame nuevo.
 # Regula el ancho de banda de "keep-alive" minimo del flujo.
 STREAM_POLL_INTERVAL = float(os.getenv("STREAM_POLL_INTERVAL", "0.05"))
+
+# F7: instante de arranque del proceso (para uptime del health check).
+_APP_START_TIME = time.time()
 
 
 @app.before_request
@@ -212,6 +218,62 @@ def api_perf():
             "out": getattr(w, "out_count", 0),
         }
     return jsonify(perf)
+
+
+@app.route("/api/health")
+def api_health():
+    """F7: health check para el orquestador / diagnéstico.
+
+    Devuelve 200 con estado detallado cuando la BD responde; 503 (con el
+    mismo cuerpo) cuando no. El estado es solo lectura y no arranca nada.
+
+    Campos:
+      - ok: la BD responde
+      - uptime_s: segundos desde el arranque del proceso
+      - python: version de Python (diagnostico)
+      - threads: hilos vivos del proceso (threading.active_count)
+      - auth_enabled: ? la auth esta activa (F5)
+      - cameras: estado y contadores por camara
+    """
+    db_status = {"ok": True, "error": None}
+    try:
+        cameras = list_cameras()
+    except Exception as exc:  # noqa: BLE001 - el health check nunca puede tirar la app
+        db_status = {"ok": False, "error": str(exc)}
+        resp = jsonify(
+            {
+                "ok": False,
+                "uptime_s": round(time.time() - _APP_START_TIME, 1),
+                "python": platform.python_version(),
+                "threads": threading.active_count(),
+                "auth_enabled": auth.auth_enabled(),
+                "db": db_status,
+                "cameras": {},
+            }
+        )
+        resp.status_code = 503
+        return resp
+
+    status_data = {}
+    for c in cameras:
+        w = camera_manager.get_worker(c["name"])
+        status_data[c["name"]] = {
+            "status": getattr(w, "status", "detenida"),
+            "in": getattr(w, "in_count", 0),
+            "out": getattr(w, "out_count", 0),
+        }
+
+    return jsonify(
+        {
+            "ok": True,
+            "uptime_s": round(time.time() - _APP_START_TIME, 1),
+            "python": platform.python_version(),
+            "threads": threading.active_count(),
+            "auth_enabled": auth.auth_enabled(),
+            "db": db_status,
+            "cameras": status_data,
+        }
+    )
 
 
 @app.route("/gallery")

@@ -30,6 +30,10 @@ PUBLIC_PATHS = tuple(
     p for p in os.getenv("WEB_PUBLIC_PATHS", "").split(",") if p.strip()
 )
 
+# Rutas publicas SIEMPRE: el health check del orquestador (F7) debe poder
+# consultarse sin credenciales para que Docker HEALTHCHECK funcione.
+_BUILTIN_PUBLIC_PATHS = ("/api/health",)
+
 AUTH_REALM = "object-tracker"
 WWW_AUTHENTICATE = f'Basic realm="{AUTH_REALM}"'
 
@@ -40,7 +44,12 @@ def auth_enabled() -> bool:
 
 
 def _is_public(path: str) -> bool:
-    """True si la ruta debe quedar fuera de la autenticacion (lista blanca)."""
+    """True si la ruta debe quedar fuera de la autenticacion (lista blanca).
+
+    Son publicas: las rutas configuradas en WEB_PUBLIC_PATHS (+ las built-in
+    como /api/health que el orquestador consulta sin credenciales)."""
+    if path.startswith(_BUILTIN_PUBLIC_PATHS):
+        return True
     return any(path == p or path.startswith(p) for p in PUBLIC_PATHS)
 
 
