@@ -58,8 +58,19 @@ contenedor. En CPUs modernas podría ser a favor, pero exigiría re-benchmark.
 
 ## Método reproducible
 
-`scripts/` no incluye el barrido (necesita frames capturados). El procedimiento
-usado: capturar 5-6 frames reales del RTSP, correr YOLO offline barriendo
-modelo × conf × imgsz, y armar una referencia-unión (IoU≥0.3 por clase) para
-calcular recall relativo por config; medir latencia por forward con el
-contenedor apagado (aislado) y con `/api/perf` (en app).
+El barrido está incrustado y parametrizado en `scripts/benchmark_detection.py`:
+capturar N frames reales del RTSP en un directorio y correr
+
+```
+python scripts/benchmark_detection.py --frames DIR_FRAMES --out DIR_SALIDA
+```
+
+El script barre modelo × conf (0.15/0.25/0.35) × imgsz (640/960), mide latencia
+mediana por forward con TORCH_THREADS 2 y 4, arma una referencia-unión
+(IoU≥0.3 por clase) sobre todas las configs para el recall relativo, y genera
+overlays (`actual/` vs `propuesto/`) para revisión visual humana. Escribe
+`result.json` y la tabla por consola.
+
+> Nota: ejecutar con el contenedor apagado (o venv aislado) para latencias
+> limpias; en la máquina real conviene además contrastar con `/api/perf`
+> (cadencia en app, con contención del grabber/render).
