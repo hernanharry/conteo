@@ -13,6 +13,7 @@ from flask import (
     Flask,
     Response,
     abort,
+    flash,
     jsonify,
     redirect,
     render_template,
@@ -20,6 +21,10 @@ from flask import (
     send_file,
     url_for,
 )
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_login import current_user
+from flask_wtf.csrf import CSRFProtect, CSRFError
 
 import auth
 import camera_manager
@@ -32,6 +37,7 @@ from db import (
     init_db,
     list_cameras,
     list_detections,
+    log_audit,
     stop_gallery_retention_worker,
     update_camera_line,
 )
@@ -43,6 +49,30 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
+# F5: secret key para firmar la sesion. SECRET_KEY es OBLIGATORIO ahora
+# (F5.2/F5.6); se busca en el entorno. Sin el, la firma de sesiones no es posible.
+app.secret_key = os.getenv("SECRET_KEY", "")
+
+# F5.6: cookie de sesion siempre HttpOnly + SameSite=Lax. Secure se controla por
+# entorno (false en LAN/HTTP, true tras ngrok/HTTPS).
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = auth.SESSION_COOKIE_SECURE
+# CSRF (F5.4): se genera una key propia si no viene del entorno.
+app.config["WTF_CSRF_TIME_LIMIT"] = int(os.getenv("WTF_CSRF_TIME_LIMIT", "3600"))
+
+auth.login_manager.init_app(app)
+_app_csrf = CSRFProtect(app)
+
+# F5.5: rate limiting del /login (5 intentos/min por IP). Definido a nivel app
+# para poder anotar la ruta login; el storage por defecto es en memoria.
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
+
 # F6: intervalo (s) de polling del generador MJPEG cuando no hay frame nuevo.
 # Regula el ancho de banda de "keep-alive" minimo del flujo.
 STREAM_POLL_INTERVAL = float(os.getenv("STREAM_POLL_INTERVAL", "0.05"))
@@ -50,18 +80,59 @@ STREAM_POLL_INTERVAL = float(os.getenv("STREAM_POLL_INTERVAL", "0.05"))
 # F7: instante de arranque del proceso (para uptime del health check).
 _APP_START_TIME = time.time()
 
+_app_log = logging.getLogger("server")
+
+
+def _get_csrf_token():
+    from flask_wtf.csrf import generate_csrf
+
+    return generate_csrf()
+
+
+def _is_public_path(path: str) -> bool:
+    """True si la ruta queda fuera del login (login, health, static, /metrics y
+    las listas blancas configuradas). Todo lo demas exige sesion (F5.3)."""
+    if not auth.is_public(path):
+        return False
+    # el health del orquestador se sirve en /health y /api/health (alias).
+    return path.startswith(("/static/", "/login", "/health", "/api/health", "/metrics"))
+
 
 @app.before_request
-def _require_auth():
-    """F5: if WEB_USER/WEB_PASSWORD estan configuradas, exige HTTP Basic Auth
-    en todas las rutas (excepto static y las de WEB_PUBLIC_PATHS). Si no hay
-    credenciales, la auth esta inactiva y todo sigue publico."""
-    if not auth.authenticate(request):
-        return (
-            "Autenticacion requerida",
-            401,
-            {"WWW-Authenticate": auth.WWW_AUTHENTICATE},
-        )
+def _require_login():
+    """F5.3: protege TODAS las rutas salvo las publicas. Las acciones de admin
+    (alta/baja de camaras, borrado) se validan adicionalmente en cada ruta con
+    require_admin()."""
+    if _is_public_path(request.path):
+        return None
+    if not current_user.is_authenticated:
+        # si no hay NINGUN usuario creado, redirigir al bootstrap no aplica
+        # aqui: create_admin debe ser manual via CLI. Pedimos login.
+        return redirect(url_for("login", next=request.full_path if request.full_path != "/" else None))
+    return None
+
+
+def require_admin():
+    """F5.3: aborta 403 si el usuario actual no es admin."""
+    if not (current_user.is_authenticated and current_user.is_admin()):
+        abort(403)
+
+
+@app.errorhandler(CSRFError)
+def _csrf_error(e):
+    return render_template(
+        "error.html", code=400, message="Token CSRF invalido o expirado. Recargue el formulario."
+    ), 400
+
+
+@app.errorhandler(404)
+def _not_found(e):
+    return render_template("error.html", code=404, message="No se encontro el recurso."), 404
+
+
+@app.errorhandler(403)
+def _forbidden(e):
+    return render_template("error.html", code=403, message="No tiene permisos para esta accion."), 403
 
 
 init_db()
@@ -73,6 +144,39 @@ atexit.register(camera_manager.stop_all)
 atexit.register(notifications.stop_all)
 # F4.5: detiene el worker de retencion de galeria (daemon) con join acotado.
 atexit.register(stop_gallery_retention_worker)
+
+
+@app.route("/login", methods=["GET", "POST"])
+@limiter.limit(os.getenv("LOGIN_RATE_LIMIT", "5 per minute"))
+def login():
+    """F5.2/F5.5: sesion de cookie con Flask-Login + rate limit de 5/min por IP."""
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+    error = None
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        user = auth.authenticate_user(username, password)
+        if user is None:
+            error = "Usuario o contrasena incorrectos."
+        else:
+            auth.log_user_in(user)
+            _app_log.info("login ok: %s", user.username)
+            nxt = request.args.get("next")
+            # solo redirigir a rutas internas (evita open redirect)
+            if nxt and nxt.startswith("/") and not nxt.startswith("//"):
+                return redirect(nxt)
+            return redirect(url_for("index"))
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    username = current_user.username if current_user.is_authenticated else None
+    auth.log_user_out()
+    if username:
+        _app_log.info("logout: %s", username)
+    return redirect(url_for("login"))
 
 
 @app.route("/")
@@ -100,7 +204,9 @@ def add_camera_route():
         "line_start": request.form.get("line_start", "0,300").strip() or "0,300",
         "line_end": request.form.get("line_end", "1280,300").strip() or "1280,300",
     }
+    require_admin()
     add_camera(data)
+    log_audit(current_user.username, "camera_add", "camera", data["name"])
     cam = get_camera(data["name"])
     camera_manager.start_camera(cam)
     return redirect(url_for("index"))
@@ -108,8 +214,10 @@ def add_camera_route():
 
 @app.route("/cameras/<name>/delete", methods=["POST"])
 def delete_camera_route(name):
+    require_admin()
     camera_manager.stop_camera(name)
     delete_camera(name)
+    log_audit(current_user.username, "camera_delete", "camera", name)
     return redirect(url_for("index"))
 
 
@@ -220,39 +328,37 @@ def api_perf():
     return jsonify(perf)
 
 
+@app.route("/health")
 @app.route("/api/health")
 def api_health():
-    """F7: health check para el orquestador / diagnéstico.
+    """F7.2/F8.2: health check para el orquestador / Docker / watchdog externo.
 
-    Devuelve 200 con estado detallado cuando la BD responde; 503 (con el
-    mismo cuerpo) cuando no. El estado es solo lectura y no arranca nada.
+    Publico siempre (sin login) para que Docker HEALTHCHECK y el orquestador
+    puedan consultarlo. Devuelve 200 cuando la BD responde; 503 con el mismo
+    cuerpo cuando no. Es solo lectura y no arranca nada.
 
     Campos:
       - ok: la BD responde
       - uptime_s: segundos desde el arranque del proceso
       - python: version de Python (diagnostico)
       - threads: hilos vivos del proceso (threading.active_count)
-      - auth_enabled: ? la auth esta activa (F5)
+      - users: cantidad de usuarios registrados (F5; si es 0 hay que bootstrap)
       - cameras: estado y contadores por camara
     """
+    base = {
+        "uptime_s": round(time.time() - _APP_START_TIME, 1),
+        "python": platform.python_version(),
+        "threads": threading.active_count(),
+        "users": auth.user_count(),
+    }
     db_status = {"ok": True, "error": None}
+    status_code = 200
     try:
         cameras = list_cameras()
     except Exception as exc:  # noqa: BLE001 - el health check nunca puede tirar la app
         db_status = {"ok": False, "error": str(exc)}
-        resp = jsonify(
-            {
-                "ok": False,
-                "uptime_s": round(time.time() - _APP_START_TIME, 1),
-                "python": platform.python_version(),
-                "threads": threading.active_count(),
-                "auth_enabled": auth.auth_enabled(),
-                "db": db_status,
-                "cameras": {},
-            }
-        )
-        resp.status_code = 503
-        return resp
+        cameras = []
+        status_code = 503
 
     status_data = {}
     for c in cameras:
@@ -263,17 +369,10 @@ def api_health():
             "out": getattr(w, "out_count", 0),
         }
 
-    return jsonify(
-        {
-            "ok": True,
-            "uptime_s": round(time.time() - _APP_START_TIME, 1),
-            "python": platform.python_version(),
-            "threads": threading.active_count(),
-            "auth_enabled": auth.auth_enabled(),
-            "db": db_status,
-            "cameras": status_data,
-        }
-    )
+    payload = {**base, "ok": db_status["ok"], "db": db_status, "cameras": status_data}
+    resp = jsonify(payload)
+    resp.status_code = status_code
+    return resp
 
 
 @app.route("/gallery")

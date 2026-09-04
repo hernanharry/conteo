@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ code }} · Detección de objetos</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <div class="brand">CCTV · Detección de objetos</div>
+    <h1 class="error-code">{{ code }}</h1>
+    <p>{{ message }}</p>
+    <a href="{{ url_for('index') }}">Volver al inicio</a>
+  </div>
+</body>
+</html>

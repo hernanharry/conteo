@@ -27,6 +27,10 @@ sys.path.insert(0, str(REPO_ROOT / "app"))
 TEST_DB_DIR = tempfile.mkdtemp(prefix="f0-db-")
 os.environ["DB_PATH"] = os.path.join(TEST_DB_DIR, "baseline.db")
 os.environ["GALLERY_DIR"] = tempfile.mkdtemp(prefix="f0-gallery-")
+# F5: los tests que importan `server` necesitan SECRET_KEY y un rate limit alto
+# (el default de 5/min romperia la suite por los muchos logins por minuto).
+os.environ["SECRET_KEY"] = "test-secret-key-no-secreta"
+os.environ["LOGIN_RATE_LIMIT"] = "2000 per minute"
 
 
 def pytest_addoption(parser):

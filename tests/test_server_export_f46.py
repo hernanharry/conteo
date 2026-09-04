@@ -31,6 +31,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "app"))
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+from testutil import login_client  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -95,6 +97,7 @@ def test_export_zip_temporal_paridad_y_sin_huerfanos(server_env, tmp_path_factor
 
     server.tempfile.mkstemp = recording_mkstemp
     client = server.app.test_client()
+    login_client(client)
     try:
         resp = client.get("/gallery/export.zip?camera=cam-a")
     finally:
@@ -135,6 +138,7 @@ def test_export_zip_respeta_tope_500(server_env, tmp_path_factory):
         db.add_detection("cam-a", cls, i, f"2026-08-28T10:00:00.{i:06d}", p)
 
     client = server.app.test_client()
+    login_client(client)
     resp = client.get("/gallery/export.zip?camera=cam-a")
     assert resp.status_code == 200
     with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:

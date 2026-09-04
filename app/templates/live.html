@@ -209,9 +209,13 @@
       return;
     }
     statusEl.textContent = "Guardando...";
+    const csrf = document.querySelector('meta[name="csrf-token"]').getAttribute("content");
     fetch(`/cameras/${encodeURIComponent(cameraName)}/line`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": csrf,
+      },
       body: JSON.stringify(pendingLine),
     })
       .then((r) => r.json())

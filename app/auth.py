@@ -1,81 +1,110 @@
-"""Autenticacion basica (F5) para la UI web y los streams.
+"""Autenticacion y autorizacion (F5) para la UI web, con Flask-Login.
 
-Protege la interfaz de configuración (cámaras, vivo, galería, exports) y los
-streams con HTTP Basic Auth. Las credenciales se leen de variables de entorno
-`WEB_USER` / `WEB_PASSWORD`. Si no están configuradas, la autenticación queda
-INACTIVA (comportamiento por defecto, compatible con instalaciones existentes
-que no querían auth).
+Reemplaza la antigua HTTP Basic Auth (auth.py F5 original) por sesiones de
+cookie gestionadas con Flask-Login y hashes de contrasena con Werkzeug.
 
 Garantias:
-- Solo usa la biblioteca estandar (hmac.compare_digest, base64).
-- Comparacion de contraseña en tiempo constante (hmac.compare_digest).
-- No loguea credenciales.
-- Protege todas las rutas EXCEPTO las de static y las de las listas blancas
-  explicitas (para no romper img/embedding cuando se desea público).
+- F5.1/F5.2: usuarios en la tabla `users`; contrasenas hasheadas con
+  werkzeug.security.generate_password_hash (nunca en claro).
+- F5.3: `require_login` (protege TODAS las rutas salvo login/health/static) y
+  `require_admin` (solo role=admin: altas/bajas de camaras, borrado).
+- F5.6: cookie de sesion siempre HttpOnly + SameSite=Lax; SESSION_COOKIE_SECURE
+  se controla por variable de entorno (false en LAN/HTTP, true tras ngrok/HTTPS).
+- LoginManager: el endpoint de login enrutado desde server.py llama a estos
+  helpers (log_user_in / log_user_out).
+
+El bootstrap del primer usuario admin se hace con scripts/create_admin.py
+(F5.8), nunca con credenciales hardcodeadas.
 """
 
-import base64
-import hmac
 import os
 
-WEB_USER = os.getenv("WEB_USER")
-WEB_PASSWORD = os.getenv("WEB_PASSWORD")
+import db
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    login_user as _flask_login_user,
+    logout_user as _flask_logout_user,
+)
+from werkzeug.security import check_password_hash, generate_password_hash
 
-# Si no hay credenciales configuradas, la auth esta desactivada (None).
-_credentials_configured = bool(WEB_USER and WEB_PASSWORD)
+# F5.6: cookie segura segun entorno. En LAN se sirve por HTTP -> Secure=False.
+# Tras un ngrok/Traefik en HTTPS, el operador la activa con SESSION_COOKIE_SECURE.
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
 
-# Rutas que quedan PUBLICAS aunque haya auth (endpoints sin credenciales).
-# Por defecto nada es publico si la auth esta activa, salvo que se liste aqui.
-PUBLIC_PATHS = tuple(
+# Rutas publicas SIEMPRE (sin login): el /health del orquestador (F7/F8) y el
+# propio /login (para poder entrar). El resto de las rutas quedan protegidas.
+PUBLIC_PATHS = (
+    "/login",
+    "/health",
+    "/api/health",
+    "/metrics",  # F7: Prometheus scrape puede ir sin auth (lectura de metricas)
+)
+# Prefijos publicos adicionales configurables (compatibilidad / flexibilidad).
+_PUBLIC_PREFIXES = tuple(
     p for p in os.getenv("WEB_PUBLIC_PATHS", "").split(",") if p.strip()
 )
 
-# Rutas publicas SIEMPRE: el health check del orquestador (F7) debe poder
-# consultarse sin credenciales para que Docker HEALTHCHECK funcione.
-_BUILTIN_PUBLIC_PATHS = ("/api/health",)
 
-AUTH_REALM = "object-tracker"
-WWW_AUTHENTICATE = f'Basic realm="{AUTH_REALM}"'
+def public_prefixes():
+    return PUBLIC_PATHS + _PUBLIC_PREFIXES
 
 
-def auth_enabled() -> bool:
-    """True si la autenticacion esta activa (hay credenciales configuradas)."""
-    return _credentials_configured
-
-
-def _is_public(path: str) -> bool:
-    """True si la ruta debe quedar fuera de la autenticacion (lista blanca).
-
-    Son publicas: las rutas configuradas en WEB_PUBLIC_PATHS (+ las built-in
-    como /api/health que el orquestador consulta sin credenciales)."""
-    if path.startswith(_BUILTIN_PUBLIC_PATHS):
+def is_public(path: str) -> bool:
+    if path in PUBLIC_PATHS:
         return True
-    return any(path == p or path.startswith(p) for p in PUBLIC_PATHS)
+    return any(path.startswith(p) for p in _PUBLIC_PREFIXES)
 
 
-def _check_credentials(username: str, password: str) -> bool:
-    """Verifica usuario y password en tiempo constante (si esta configurado)."""
-    if not hmac.compare_digest(str(username or ""), str(WEB_USER or "")):
-        return False
-    return hmac.compare_digest(str(password or ""), str(WEB_PASSWORD or ""))
+login_manager = LoginManager()
+login_manager.login_view = "login"
+login_manager.login_message = "Debe iniciar sesion para acceder."
+login_manager.login_message_category = "warning"
 
 
-def authenticate(request):
-    """Valida una request con el header Authorization (Basic).
+class User(UserMixin):
+    """Un usuario cargado desde la tabla `users` para la sesion."""
 
-    Devuelve True si la request tiene credenciales validas (o si la auth esta
-    desactivada). Devuelve False en caso contrario."""
-    if not auth_enabled():
-        return True
-    if _is_public(request.path):
-        return True
+    def __init__(self, id_, username, role):
+        self.id = id_
+        self.username = username
+        self.role = role
 
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Basic "):
-        return False
-    try:
-        raw = base64.b64decode(auth_header[6:]).decode("utf-8")
-    except Exception:
-        return False
-    username, _, password = raw.partition(":")
-    return _check_credentials(username, password)
+    def is_admin(self):
+        return self.role == "admin"
+
+
+@login_manager.user_loader
+def _load_user(user_id):
+    row = db.get_user_by_id(int(user_id))
+    if row is None:
+        return None
+    return User(row["id"], row["username"], row["role"])
+
+
+def authenticate_user(username, password):
+    """Verifica credenciales contra la tabla users. Devuelve un objeto User si
+    son validas, o None si no. Comparacion del hash en tiempo constante se
+    garantiza dentro check_password_hash."""
+    row = db.get_user(username)
+    if row is None:
+        return None
+    if check_password_hash(row["password_hash"], password):
+        return User(row["id"], row["username"], row["role"])
+    return None
+
+
+def hash_password(password):
+    return generate_password_hash(password)
+
+
+def log_user_in(user):
+    _flask_login_user(user)
+
+
+def log_user_out():
+    _flask_logout_user()
+
+
+def user_count():
+    return len(db.list_users())

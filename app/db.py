@@ -65,6 +65,35 @@ def init_db():
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_detections_ts ON detections(timestamp)")
 
+        # F5.1: usuarios de la UI (sesiones con Flask-Login). password_hash se
+        # genera con werkzeug (generate_password_hash). role es admin|viewer.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'viewer'
+                    CHECK (role IN ('admin', 'viewer')),
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        # F5.9: auditoria de acciones sensibles (altas/bajas de camaras y
+        # borrado de detecciones/galeria). Solo lectura para la UI.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                action TEXT NOT NULL,
+                entity TEXT NOT NULL,
+                entity_ref TEXT,
+                timestamp TEXT NOT NULL
+            )
+            """
+        )
+
 
 def list_cameras():
     with get_conn() as conn:
@@ -174,6 +203,70 @@ def distinct_classes():
     with get_conn() as conn:
         rows = conn.execute("SELECT DISTINCT class_name FROM detections ORDER BY class_name")
         return [r[0] for r in rows]
+
+
+# F5 ----------------------------------------------------------------
+# Usuarios + auditoria (F5.1, F5.9). Los hashes se generan/verifican con
+# werkzeug (F5.2) desde auth.py/server.py; esta capa solo persiste y consulta.
+
+def list_users():
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT id, username, role, created_at FROM users ORDER BY id"
+        )]
+
+
+def get_user(username):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_id(user_id):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def create_user(username, password_hash, role="viewer"):
+    with _lock, get_conn() as conn:
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            (username, password_hash, role, datetime.now().isoformat()),
+        )
+
+
+def update_user_role(username, role):
+    with _lock, get_conn() as conn:
+        conn.execute("UPDATE users SET role=? WHERE username=?", (role, username))
+
+
+def user_exists(username):
+    with get_conn() as conn:
+        row = conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone()
+        return row is not None
+
+
+def log_audit(username, action, entity, entity_ref=None):
+    """F5.9: registra una accion sensible en audit_log (altas/bajas de camaras,
+    borrado de detecciones/galeria). Nunca hace fallar la operacion por un
+    error de auditoria."""
+    try:
+        with _lock, get_conn() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (username, action, entity, entity_ref, timestamp)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (username, action, entity, entity_ref, datetime.now().isoformat()),
+            )
+    except Exception as exc:  # noqa: BLE001 - la auditoria no debe romper la app
+        logger.warning("no se pudo auditar %s/%s: %s", action, entity, exc)
+
+
+def list_audit_log(limit=200):
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
+        )]
 
 
 # F4.5 ------------------------------------------------

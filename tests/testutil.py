@@ -1,7 +1,30 @@
-"""Utilidades para tests de lifecycle (F1): dobles deterministas del
-stack pesado (sin cv2 / supervision / torch / ultralytics / requests)."""
+"""Utilidades para tests: dobles deterministas del stack pesado (F1) y
+helpers de login para los tests de servidor (F5)."""
 
+import re
 import time
+
+
+def login_client(client, username="admin", password="secret", role="admin"):
+    """Inicia sesion en un test_client de Flask (F5).
+
+    Crea el usuario en la BD aislada si no existe y hace un POST real a /login
+    (con CSRF y rate limit por defecto altos en tests). Devuelve la respuesta
+    del POST. Despues de esto, el client queda autenticado en su sesion."""
+    import auth as auth_mod
+    import db
+
+    if not db.get_user(username):
+        db.create_user(username, auth_mod.hash_password(password), role=role)
+
+    # extraer el token CSRF del formulario de login
+    page = client.get("/login")
+    m = re.search(r'name="csrf_token" value="([^"]+)"', page.get_data(as_text=True))
+    token = m.group(1) if m else ""
+    return client.post(
+        "/login",
+        data={"username": username, "password": password, "csrf_token": token},
+    )
 
 
 def wait_until(condition, timeout=5.0, interval=0.02):
@@ -14,6 +37,33 @@ def wait_until(condition, timeout=5.0, interval=0.02):
             return True
         time.sleep(interval)
     return bool(condition())
+
+
+def login_client(client, username="admin", password="secret", role="admin"):
+    """Loguea un usuario en un Flask test_client creando el user en la DB aislada."""
+    import re
+    import auth
+    import db
+    pw_hash = auth.hash_password(password)
+    existing = db.get_user(username)
+    if existing:
+        # Actualizar password y rol siempre para evitar residuos entre tests
+        import sqlite3
+        conn = db.get_conn()
+        conn.execute("UPDATE users SET password_hash=?, role=? WHERE username=?",
+                     (pw_hash, role, username))
+        conn.commit()
+        conn.close()
+    else:
+        db.create_user(username, pw_hash, role=role)
+    # Obtener token CSRF del formulario de login
+    page = client.get("/login")
+    m = re.search(r'name="csrf_token" value="([^"]+)"', page.get_data(as_text=True))
+    token = m.group(1) if m else ""
+    resp = client.post("/login", data={
+        "username": username, "password": password, "csrf_token": token,
+    }, follow_redirects=False)
+    return resp
 
 
 class FakeCap:

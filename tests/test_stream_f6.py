@@ -24,7 +24,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "app"))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
-from testutil import FakeWorker  # noqa: E402
+from testutil import FakeWorker, login_client  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -69,6 +69,7 @@ def fake_worker_registered(stream_server_env, camera_dict):
 def test_stream_404_para_camara_inexistente(stream_server_env):
     server = stream_server_env
     client = server.app.test_client()
+    login_client(client)
     resp = client.get("/stream/no-existe")
     assert resp.status_code == 404
 
@@ -76,6 +77,7 @@ def test_stream_404_para_camara_inexistente(stream_server_env):
 def test_stream_responde_headers_mime_y_anticache(fake_worker_registered):
     server, worker = fake_worker_registered
     client = server.app.test_client()
+    login_client(client)
     resp = client.get("/stream/entrada-principal")
 
     assert resp.status_code == 200
@@ -89,10 +91,9 @@ def test_stream_responde_headers_mime_y_anticache(fake_worker_registered):
 def test_stream_emite_primer_frame_multipart(fake_worker_registered):
     server, worker = fake_worker_registered
     client = server.app.test_client()
+    login_client(client)
     resp = client.get("/stream/entrada-principal")
 
-    # El test client no consumio el body (we got headers before body); leemos
-    # el primer chunp del generador y luego lo cerramos (GeneratorExit limpio).
     gen = iter(resp.response)
     try:
         first = next(gen)
@@ -109,16 +110,13 @@ def test_poll_interval_default_y_parse(stream_server_env, monkeypatch):
     import importlib
     import server
 
-    # default: 0.05
     monkeypatch.delenv("STREAM_POLL_INTERVAL", raising=False)
     importlib.reload(server)
     assert server.STREAM_POLL_INTERVAL == 0.05
 
-    # valor custom parseable
     monkeypatch.setenv("STREAM_POLL_INTERVAL", "0.33")
     importlib.reload(server)
     assert server.STREAM_POLL_INTERVAL == 0.33
-    # restaurar el server default para no contaminar otros tests
     monkeypatch.delenv("STREAM_POLL_INTERVAL", raising=False)
     importlib.reload(server)
 
@@ -127,10 +125,9 @@ def test_stream_generador_cierra_con_GeneratorExit(fake_worker_registered):
     """El generador sale prolijo cuando el cliente corta (GeneratorExit)."""
     server, worker = fake_worker_registered
     client = server.app.test_client()
+    login_client(client)
     resp = client.get("/stream/entrada-principal")
     gen = iter(resp.response)
-    # consumir un frame y luego cerrar explicitamente
     next(gen)
     gen.close()
-    # cerrar dos veces no rompe
     gen.close()
