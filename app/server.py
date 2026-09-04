@@ -44,7 +44,8 @@ from db import (
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
 )
 
 app = Flask(__name__)
@@ -135,8 +136,36 @@ def _forbidden(e):
     return render_template("error.html", code=403, message="No tiene permisos para esta accion."), 403
 
 
+# F6: HLS segmenter (si ffmpeg está disponible)
+import hls_segmenter
+
+atexit.register(hls_segmenter.stop_all_segmenters)
+atexit.register(hls_segmenter.stop_cleanup_worker)
+
+# F7.1: métricas Prometheus
+import metrics as prom_metrics
+
+# F7.3: alertas proactivas Telegram
+import alerts as alert_monitor
+
+
+def _start_alerts():
+    try:
+        import notifications
+        alert_monitor.start_alert_monitor(
+            camera_manager,
+            notif_worker_fn=lambda cam, text: notifications.get_notification_worker().submit_message(cam, text),
+        )
+    except Exception:
+        pass
+
+
+atexit.register(alert_monitor.stop_alert_monitor)
+
+
 init_db()
 camera_manager.start_all()
+_start_alerts()
 # Shutdown limpio (F1+F3): al salir el proceso se detienen los workers de
 # camara, el watchdog y el worker de notificaciones (cola+reloj horario) con
 # join acotado -- sin threads huerfanos ni conteos por escribir.
@@ -144,12 +173,6 @@ atexit.register(camera_manager.stop_all)
 atexit.register(notifications.stop_all)
 # F4.5: detiene el worker de retencion de galeria (daemon) con join acotado.
 atexit.register(stop_gallery_retention_worker)
-
-# F6: HLS segmenter (si ffmpeg está disponible)
-import hls_segmenter
-
-atexit.register(hls_segmenter.stop_all_segmenters)
-atexit.register(hls_segmenter.stop_cleanup_worker)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -332,6 +355,15 @@ def hls_segment(name, segment):
     if not os.path.isfile(seg_path):
         abort(404)
     return send_file(seg_path, mimetype="video/mp2t")
+
+
+@app.route("/metrics")
+def metrics_endpoint():
+    """F7.1: Prometheus exposition format. Publico para scraping."""
+    return Response(
+        prom_metrics.collect_metrics(_APP_START_TIME),
+        mimetype="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.route("/api/perf")
