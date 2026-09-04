@@ -219,23 +219,119 @@ mandale un mensaje, y consultá
   con JSON (uptime, versión de Python, hilos vivos, estado y contadores por
   cámara) cuando la BD responde; 503 si no. Es público (sin auth) para que
   el `HEALTHCHECK` del contenedor lo use.
+- **`/metrics`**: endpoint Prometheus (F7.1) con métricas de uptime, cámaras
+  activas, detecciones por clase, errores RTSP, archivos de galería y uso
+  de disco. Público para scraping sin auth.
 - **`/stream/<nombre>`**: headers anti-cache + `X-Accel-Buffering: no` (F6)
   para que ningún proxy bufferice el MJPEG.
+
+## 10. Observabilidad (F7)
+
+Stack de observabilidad opcional con Prometheus + Grafana:
+
+```bash
+# Activar solo si necesitas métricas históricas / dashboards
+docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+  --profile observability up -d
+
+# Prometheus: http://IP:9090  |  Grafana: http://IP:3000 (admin/admin)
+```
+
+La app expone `/metrics` de forma nativa (sin el stack de observabilidad).
+
+### Alertas proactivas (Telegram)
+
+Si configurás `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`, el monitor de
+alertas envía notificaciones cuando:
+- Una cámara lleva más de 5 minutos caída (configurable con
+  `ALERT_CAMERA_DOWN_MINUTES`).
+- El intervalo mínimo entre alertas de la misma cámara es de 5 minutos
+  (configurable con `ALERT_MIN_ALERT_INTERVAL`).
+
+## 11. Seguridad (F5)
+
+- **HTTP Basic Auth** opcional (`WEB_USER` / `WEB_PASSWORD`). Si no se
+  definen, la app corre abierta.
+- **CSRF** protection en todos los formularios POST (Flask-WTF).
+- **Rate limit** en el login (5/min por IP en producción, configurable con
+  `LOGIN_RATE_LIMIT`).
+- **Cookies de sesión** HttpOnly + SameSite=Lax.
+- **Audit log** de todas las acciones de escritura (quién, qué, cuándo).
+- **Usuarios** con roles: `admin` (acceso total) y `viewer` (solo lectura).
+
+## 12. Docker / Producción (F8)
+
+### Healthcheck
+
+El contenedor tiene un `HEALTHCHECK` nativo que consulta `/api/health` cada
+30 segundos. Docker Desktop mostra el estado (`healthy`/`unhealthy`).
+
+### Hardening
+
+- Usuario `appuser:appuser` (no-root) dentro del contenedor.
+- Límites de recursos: 6GB RAM / 3.5 CPU (ajustar en `docker-compose.yml`).
+- `stop_grace_period: 30s` para shutdown limpio (persiste conteos).
+
+### Traefik (opcional)
+
+Si usás Traefik como reverse proxy:
+
+```bash
+docker compose --profile with-traefik up -d
+# Dashboard Traefik: http://IP:8080
+# App vía Traefik: http://IP/tracker
+```
+
+Sin Traefik, la app sigue accesible directamente en `http://IP:8001`.
+
+### Backup automatizado
+
+```bash
+# Backup manual
+./scripts/backup.sh
+
+# Backup con cron (diario a las 3am)
+0 3 * * * cd /ruta/al/proyecto && ./scripts/backup.sh >> ./data/backups/backup.log 2>&1
+```
+
+Los backups se guardan en `./data/backups/` (máximo 7 por defecto, configurable con `MAX_BACKUPS`).
+
+### Build reproducible
+
+```bash
+# Con tag de versión
+BUILD_VERSION=1.0.0 docker compose build
+
+# Verificar labels
+docker inspect object-tracker | grep -A5 "org.opencontainers"
+```
 
 ## Estructura del proyecto
 
 ```
-hikvision-object-tracker/
+conteo-v6/
 ├── app/
-│   ├── server.py           # rutas Flask: cámaras, vivo, galería, health
-│   ├── auth.py             # HTTP Basic Auth opcional (F5)
+│   ├── server.py           # rutas Flask: cámaras, vivo, galería, health, metrics
+│   ├── auth.py             # HTTP Basic Auth + Flask-Login (F5)
+│   ├── metrics.py          # Prometheus exposition (F7.1)
+│   ├── alerts.py           # Monitor de alertas proactivas Telegram (F7.3)
+│   ├── hls_segmenter.py    # HLS streaming (F6)
 │   ├── camera_manager.py   # arranca/detiene el worker de cada cámara
 │   ├── camera_worker.py    # loop de detección+tracking+galería por cámara
-│   ├── db.py                # SQLite: cámaras registradas y detecciones
-│   ├── templates/           # index.html, live.html, gallery.html
+│   ├── db.py                # SQLite: cámaras, detecciones, users, audit_log
+│   ├── notifications.py    # cola desacoplada de notificaciones (F3)
+│   ├── gallery_retention.py # limpieza automática de galería (F4.5)
+│   ├── templates/           # index, live, gallery, login, error, base
 │   └── static/style.css
-├── Dockerfile              # torch pinneado + HEALTHCHECK (F8)
-├── docker-compose.yml
+├── scripts/
+│   ├── backup.sh            # backup automatizado de ./data (F8.4)
+│   ├── create_admin.py      # bootstrap de usuario admin (F5.8)
+│   └── benchmark_sqlite.py  # benchmark SQLite (F4.4)
+├── tests/                    # suite completa (>140 tests)
+├── Dockerfile               # torch pinneado + HEALTHCHECK + no-root (F8)
+├── docker-compose.yml       # servicio principal + Traefik opcional
+├── docker-compose.observability.yml  # Prometheus + Grafana (F7.5)
+├── prometheus.yml           # config de scraping (F7.5)
 ├── requirements.txt
 ├── .env.example
 └── README.md

@@ -1,10 +1,22 @@
 FROM python:3.11-slim
 
+# F8.6: metadata de build para trazabilidad
+ARG BUILD_DATE
+ARG BUILD_VERSION=latest
+LABEL maintainer="conteo-v6" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.title="Object Tracker (YOLOv8+ByteTrack)" \
+      org.opencontainers.image.description="Detección, tracking y conteo de objetos en streams RTSP"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+# F8.3: usuario no-root para el contenedor
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
 
 WORKDIR /app
 

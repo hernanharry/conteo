@@ -3,21 +3,74 @@
 # escenario soportado.
 services:
   object-tracker:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: "${BUILD_DATE:-}"
+        BUILD_VERSION: "${BUILD_VERSION:-}"
+    image: object-tracker:${BUILD_VERSION:-latest}
     container_name: object-tracker
     restart: unless-stopped
     env_file:
       - .env
+    # F8.1: Traefik labels — si no usas Traefik, simplemente ignora estas labels.
+    # El puerto 8001 sigue expuesto directamente para setups sin Traefik.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tracker.rule=PathPrefix(`/tracker`)"
+      - "traefik.http.routers.tracker.entrypoints=web"
+      - "traefik.http.services.tracker.loadbalancer.server.port=8001"
     ports:
       - "8001:8001"  # UI web: http://IP-DEL-SERVIDOR:8001
     volumes:
       - ./data:/app/data  # SQLite (cámaras + detecciones) y galería de imágenes
     networks:
       - vision-net
+    # F8.2: healthcheck consolidado (Dockerfile define HEALTHCHECK; compose permite override)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+    # F8.3: limits de recursos (ajustar segun servidor real)
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: "3.5"
+        reservations:
+          memory: 2G
+          cpus: "1.5"
+    # F8.3: usuario no-root dentro del contenedor
+    user: "appuser:appuser"
     # F8: el shutdown limpio (atexit) hace joins acotados de workers, watchdog,
     # notificaciones y retencion de galeria; con el default de 10s un container
     # podia quedar matado (SIGKILL) antes de persistir los conteos finales.
     stop_grace_period: 30s
+
+  # F8.1: Traefik reverse proxy (opcional, activar solo si se necesita)
+  # Si no usas Traefik, elimina este servicio. La app sigue accesible directamente
+  # en el puerto 8001.
+  traefik:
+    image: traefik:v3.1
+    container_name: traefik
+    restart: unless-stopped
+    profiles:
+      - with-traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - vision-net
 
 networks:
   # Red donde se alcanza el n8n por nombre de servicio ("http://n8n:5678/...").
