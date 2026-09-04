@@ -43,8 +43,6 @@ services:
         reservations:
           memory: 2G
           cpus: "1.5"
-    # F8.3: usuario no-root dentro del contenedor
-    user: "appuser:appuser"
     # F8: el shutdown limpio (atexit) hace joins acotados de workers, watchdog,
     # notificaciones y retencion de galeria; con el default de 10s un container
     # podia quedar matado (SIGKILL) antes de persistir los conteos finales.
