@@ -50,9 +50,15 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# F5: secret key para firmar la sesion. SECRET_KEY es OBLIGATORIO ahora
-# (F5.2/F5.6); se busca en el entorno. Sin el, la firma de sesiones no es posible.
-app.secret_key = os.getenv("SECRET_KEY", "")
+# F5: secret key para firmar la sesion. Si no esta en el entorno se genera
+# uno aleatorio al arrancar (funciona, pero las sesiones se invalidan al
+# reiniciar el contenedor). En produccion, definir SECRET_KEY en .env.
+_secret = os.getenv("SECRET_KEY", "")
+if not _secret:
+    import secrets
+    _secret = secrets.token_hex(32)
+    logging.warning("SECRET_KEY no definido en .env; se genero una clave automatica (las sesiones se invalidan al reiniciar)")
+app.secret_key = _secret
 
 # F5.6: cookie de sesion siempre HttpOnly + SameSite=Lax. Secure se controla por
 # entorno (false en LAN/HTTP, true tras ngrok/HTTPS).
