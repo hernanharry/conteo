@@ -145,6 +145,12 @@ atexit.register(notifications.stop_all)
 # F4.5: detiene el worker de retencion de galeria (daemon) con join acotado.
 atexit.register(stop_gallery_retention_worker)
 
+# F6: HLS segmenter (si ffmpeg está disponible)
+import hls_segmenter
+
+atexit.register(hls_segmenter.stop_all_segmenters)
+atexit.register(hls_segmenter.stop_cleanup_worker)
+
 
 @app.route("/login", methods=["GET", "POST"])
 @limiter.limit(os.getenv("LOGIN_RATE_LIMIT", "5 per minute"))
@@ -297,6 +303,35 @@ def stream(name):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# F6: HLS streaming — sirve segmentos .m3u8 y .ts generados por hls_segmenter.
+# MJPEG (/stream) queda como fallback de compatibilidad (F6.3: se conserva).
+
+@app.route("/hls/<name>/stream.m3u8")
+def hls_playlist(name):
+    if not hls_segmenter.hls_enabled():
+        abort(404)
+    playlist = os.path.join(hls_segmenter.get_hls_dir(name), "stream.m3u8")
+    if not os.path.isfile(playlist):
+        abort(404)
+    return send_file(
+        playlist,
+        mimetype="application/vnd.apple.mpegurl",
+        download_name="stream.m3u8",
+    )
+
+
+@app.route("/hls/<name>/<segment>")
+def hls_segment(name, segment):
+    if not hls_segmenter.hls_enabled():
+        abort(404)
+    if not segment.endswith(".ts") or "/" in segment or ".." in segment:
+        abort(400)
+    seg_path = os.path.join(hls_segmenter.get_hls_dir(name), segment)
+    if not os.path.isfile(seg_path):
+        abort(404)
+    return send_file(seg_path, mimetype="video/mp2t")
 
 
 @app.route("/api/perf")

@@ -13,7 +13,8 @@
   </p>
 
   <div class="live-view" id="liveWrap">
-    <img id="liveImg" src="{{ url_for('stream', name=camera.name) }}" alt="Vivo {{ camera.name }}">
+    <video id="liveVideo" class="live-video" controls autoplay muted playsinline></video>
+    <img id="liveImg" class="live-img" src="{{ url_for('stream', name=camera.name) }}" alt="Vivo {{ camera.name }}" style="display:none">
     <svg id="lineOverlay"></svg>
   </div>
 
@@ -236,6 +237,32 @@
         statusEl.textContent = "Error guardando: " + err.message;
       });
   });
+})();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+<script>
+(function() {
+  const hlsUrl = {{ url_for('hls_playlist', name=camera.name) | tojson }};
+  const video = document.getElementById("liveVideo");
+  const imgFallback = document.getElementById("liveImg");
+  if (Hls.isSupported()) {
+    const hls = new Hls({ liveSyncDurationCount: 2, liveMaxLatencyDurationCount: 4 });
+    hls.loadSource(hlsUrl);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, function() { video.play().catch(()=>{}); });
+    hls.on(Hls.Events.ERROR, function(e, data) {
+      if (data.fatal) { hls.destroy(); imgFallback.style.display="block"; video.style.display="none"; }
+    });
+    video.style.display = "block";
+    imgFallback.style.display = "none";
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = hlsUrl;
+    video.style.display = "block";
+    imgFallback.style.display = "none";
+  } else {
+    video.style.display = "none";
+    imgFallback.style.display = "block";
+  }
 })();
 </script>
 

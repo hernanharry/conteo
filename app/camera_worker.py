@@ -650,6 +650,12 @@ class CameraWorker(threading.Thread):
     def _set_latest_jpeg(self, jpeg_bytes):
         with self._jpeg_lock:
             self._latest_jpeg = jpeg_bytes
+        # F6: alimentar el segmentador HLS si está activo
+        try:
+            import hls_segmenter
+            hls_segmenter.push_frame(self.name, jpeg_bytes)
+        except ImportError:
+            pass
 
     def _set_last_detections(self, detections, labels):
         with self._detections_lock:

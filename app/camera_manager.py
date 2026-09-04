@@ -100,11 +100,24 @@ def start_camera(cam: dict):
             logger.exception("[manager] no se pudo arrancar worker '%s': %s", name, exc)
             return
         _workers[name] = worker
+    # F6: arrancar el segmentador HLS si está disponible
+    try:
+        import hls_segmenter
+        hls_segmenter.start_camera_segmenter(name) if hasattr(hls_segmenter, 'start_camera_segmenter') else hls_segmenter.start_segmenter(name)
+        hls_segmenter.ensure_cleanup_worker()
+    except ImportError:
+        pass
 
 
 def stop_camera(name: str):
     with _lock:
         worker = _workers.pop(name, None)
+    # F6: parar el segmentador HLS
+    try:
+        import hls_segmenter
+        hls_segmenter.stop_segmenter(name)
+    except ImportError:
+        pass
     if worker is None:
         return
     try:
