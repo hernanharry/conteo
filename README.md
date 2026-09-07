@@ -12,6 +12,9 @@ virtual, y muestra todo desde el navegador:
 - **Galería**: pestaña con los recortes de cada objeto detectado, agrupados
   y filtrables por clase (persona, auto, moto...) y por cámara.
 - Reporte horario opcional a un webhook de n8n y/o a un chat de Telegram.
+- Conteo de autos rápidos: **F10** estabiliza los IDs de ByteTrack ante
+  cambios de `tracker_id` entre frames (configurable en `.env`, sección
+  `ID_ASSOC_*`), así LineZone cuenta los cruces que antes se perdían.
 
 ## 1. Preparar el servidor Debian
 
@@ -129,11 +132,14 @@ COUNTING_DEBUG=1 docker compose up -d --build
 docker compose logs -f object-tracker
 ```
 
-Cada frame logueado incluye `dets`, `ids` (tracker_ids de ByteTrack),
-`lados` (signo del centro del bbox respecto de la línea) y `cruces`.
-- Si `ids` cambia de frame en frame → ByteTrack re-identifica al objeto y
-  LineZone no puede atribuirle el cruce (el contador exige el **mismo** id
-  de un lado y del otro de la línea).
+Cada frame logueado incluye `dets`, `raw_ids` (tracker_ids de ByteTrack),
+`ids(entity)` (ids estabilizados, los que ve LineZone), `lados` (signo del
+centro del bbox respecto de la línea) y `cruces`.
+- Si `raw_ids` cambia de frame en frame pero `ids(entity)` se mantiene → es el
+  caso típico de autos rápidos: ByteTrack re-identifica al objeto, y sin
+  estabilización LineZone no podría atribuirle el cruce (el contador exige el
+  **mismo** id de un lado y del otro de la línea). Desde **F10** esos cruces se
+  cuentan.
 - Si `lados` nunca cambia → el bbox jamás cruzó la línea real: revisá que la
   línea esté donde cruza el objeto.
 - Si `cruces` avanza pero la página no → el conteo ocurre (revisá la tabla

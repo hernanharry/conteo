@@ -62,6 +62,42 @@ def test_line_zone_cuenta_el_mismo_tracker_una_sola_vez():
 
 
 @pytest.mark.docker
+def test_line_zone_cuenta_si_se_estabilizan_ids_ante_switch():
+    """F10 trunca la causa 1 de 'cruza pero no cuenta': ByteTrack re-ida al
+    objeto (ids 1 -> 2 -> 3 para el mismo auto) y LineZone NUNCA ve la
+    transicion. Al re-etiquetar con id_stabilizer.StableIDAssigner (misma
+    clase + desplazamiento acotado) el auto conserva un entity_id estable y el
+    cruce SI se cuenta. Requiere el stack completo (por eso `docker`)."""
+    import numpy as np
+    import supervision as sv
+
+    from id_stabilizer import StableIDAssigner
+
+    zone = sv.LineZone(sv.Point(0, 300), sv.Point(1280, 300))
+    assigner = StableIDAssigner()
+
+    abajo = (500, 350, 720, 540)  # box completo debajo de la linea
+    arriba = (500, 60, 720, 250)  # box completo arriba de la linea
+    frames = [
+        sv.Detections(xyxy=np.array([abajo]), tracker_id=np.array([1])),
+        sv.Detections(xyxy=np.array([arriba]), tracker_id=np.array([2])),
+    ]
+    for dets in frames:
+        tuplas = []
+        for i in range(len(dets)):
+            cid = int(dets.class_id[i]) if dets.class_id is not None else 2
+            x1, y1, x2, y2 = dets.xyxy[i]
+            tuplas.append((int(dets.tracker_id[i]), cid, (int(x1), int(y1), int(x2), int(y2))))
+        dets.tracker_id = np.array(assigner.update(tuplas), dtype=int)
+        zone.trigger(dets)
+
+    # Con raw IDs (1 luego 2) esto queda en 0 (ver test_line_zone_no_cuenta_
+    # si_tracker_id_cambia). Con los ids estabilizados, el cruce suma 1.
+    assert zone.in_count == 1
+    assert zone.out_count == 0
+
+
+@pytest.mark.docker
 def test_line_zone_no_cuenta_si_tracker_id_cambia():
     """ByteTrack que re-ida al objeto entre frames: LineZone inicializa el
     estado nuevo y jamas ve la transicion -> 0 (sintoma "cruce pero no cuenta")."""

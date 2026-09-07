@@ -22,6 +22,7 @@ from datetime import datetime
 
 from camera_config import parse_camera_config
 from db import add_detection, ensure_gallery_retention_worker, update_camera_counts
+from id_stabilizer import StableIDAssigner
 
 # F3: las notificaciones (n8n/Telegram) se ejecutan en un worker desacoplado
 # (hilo aparte cola acotada). Este modulo solo importa stdlib, no bloquea.
@@ -332,6 +333,9 @@ class _DetectorContext:
         self.in_count = initial_in
         self.out_count = initial_out
         self.ready = True
+        # F10: estabiliza IDs de ByteTrack ante ID switches (autos rapidos);
+        # LineZone recibe estos entity_id y si cuenta la transicion de lado.
+        self.id_stabilizer = StableIDAssigner()
         try:
             self.detections = sv.Detections.empty()
         except Exception:
@@ -356,9 +360,15 @@ class _DetectorContext:
 
         detections = sv.Detections.from_ultralytics(results)
         detections = self.tracker.update_with_detections(detections)
+        raw_ids = (
+            None
+            if detections.tracker_id is None
+            else [int(t) for t in detections.tracker_id]
+        )
+        detections = self._stabilize_ids(detections)
         crossed_in, crossed_out = self.line_zone.trigger(detections)
         if COUNTING_DEBUG:
-            self._log_counting_debug(detections, crossed_in, crossed_out)
+            self._log_counting_debug(detections, crossed_in, crossed_out, raw_ids)
         self.in_count = self.base_in + self.line_zone.in_count
         self.out_count = self.base_out + self.line_zone.out_count
 
@@ -450,13 +460,39 @@ class _DetectorContext:
         except Exception as exc:
             logger.warning("[%s] error persistiendo conteos: %s", self.cfg.name, exc)
 
-    def _log_counting_debug(self, detections, crossed_in, crossed_out):
+    def _stabilize_ids(self, detections):
+        """F10: re-etiqueta tracker_id con entity_id estables ante ID switches.
+
+        Antes de LineZone, asocia cada deteccion con una entidad conocida
+        (primero por tracker_id de ByteTrack, luego por geometria: misma clase
+        + desplazamiento acotado). Asi un auto rapido que ByteTrack re-ida en
+        cada frame mantiene el MISMO entity_id y LineZone si ve la transicion
+        de lado de la linea. Devuelve el mismo objeto detections con el
+        tracker_id reescrito (en su lugar)."""
+        if detections.tracker_id is None:
+            return detections
+        import numpy as np
+
+        tuples = []
+        for i in range(len(detections)):
+            class_id = (
+                int(detections.class_id[i]) if detections.class_id is not None else None
+            )
+            tracker_id = int(detections.tracker_id[i])
+            x1, y1, x2, y2 = detections.xyxy[i]
+            tuples.append((tracker_id, class_id, (int(x1), int(y1), int(x2), int(y2))))
+        entity_ids = self.id_stabilizer.update(tuples)
+        detections.tracker_id = np.array(entity_ids, dtype=int)
+        return detections
+
+    def _log_counting_debug(self, detections, crossed_in, crossed_out, raw_ids=None):
         """Diagnostico opt-in (COUNTING_DEBUG=1): vuelca por frame el estado
         que determina si LineZone cuenta o no. Nunca altera el conteo.
 
         Util para explicar un "cruce visible pero 0 conteo":
-        - ids con muchos cambios entre frames => ByteTrack re-ida al objeto
-          (LineZone solo cuenta un cruce si el MISMO tracker_id cambia de lado).
+        - ids con muchos cambios entre frames => ByteTrack re-ida al objeto;
+          F10 los estabiliza (ids de LineZone), el cruce deja de perderse por
+          ID switch.
         - lados que nunca cambian => el bbox nunca cruzo la linea real en las
           coordenadas del frame nativo (problema de calibracion/escala de linea).
         - cruces>0 y tot que sube => el conteo SI ocurrio (revisar la UI).
@@ -487,9 +523,10 @@ class _DetectorContext:
                     crossed_ids.append((ids[i], "in" if crossed_in[i] else "out"))
 
             logger.info(
-                "[%s] counting dets=%d ids=%s lados=%s cruces=%s linezone(posicion nativa)=(%s)->(%s)",
+                "[%s] counting dets=%d raw_ids=%s ids(entity)=%s lados=%s cruces=%s linezone(posicion nativa)=(%s)->(%s)",
                 self.cfg.name,
                 len(xyxy),
+                raw_ids,
                 ids,
                 sides,
                 crossed_ids or "ninguno",

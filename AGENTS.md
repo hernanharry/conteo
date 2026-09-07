@@ -94,12 +94,12 @@ La red externa `vision-net` en `docker-compose.yml` debe apuntar a la red Docker
 | `flask` | Servidor web y templates Jinja2 |
 | `requests` | Webhook n8n y API de Telegram |
 
-Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`, `IMGSZ`, `TORCH_THREADS`, `GRABBER_MAX_FPS`, `N8N_WEBHOOK_URL`, `TELEGRAM_*`, `WATCHDOG_*`, `LIVE_*`, `DB_PATH`, `GALLERY_DIR`, `GALLERY_MAX_FILES`, `GALLERY_MAX_AGE_DAYS`, `GALLERY_CLEANUP_INTERVAL_MIN`). Además (F5/F6): `WEB_USER`/`WEB_PASSWORD`/`WEB_PUBLIC_PATHS` (auth opcional), `STREAM_POLL_INTERVAL` (polling del MJPEG).
+Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`, `IMGSZ`, `TORCH_THREADS`, `GRABBER_MAX_FPS`, `N8N_WEBHOOK_URL`, `TELEGRAM_*`, `WATCHDOG_*`, `LIVE_*`, `DB_PATH`, `GALLERY_DIR`, `GALLERY_MAX_FILES`, `GALLERY_MAX_AGE_DAYS`, `GALLERY_CLEANUP_INTERVAL_MIN`). Además (F5/F6): `WEB_USER`/`WEB_PASSWORD`/`WEB_PUBLIC_PATHS` (auth opcional), `STREAM_POLL_INTERVAL` (polling del MJPEG). Y (F10): `ID_ASSOC_MAX_AGE_FRAMES`/`ID_ASSOC_MAX_DISPLACEMENT`/`ID_ASSOC_MIN_OVERLAP` (estabilización de IDs de ByteTrack ante ID switches).
 
 ## Fases implementadas
 
 - **F0** baseline: tests, smoke RTSP y `docs/baseline.md` (sin tocar `app/`).
-- **F1** robustez: lifecycle de workers, DI inyectable, watchdog con anti-lockup.
+- **F1** robustez: lifecycle de workers, DI inyectable, watchdog con anti-lockup. El watchdog relanza el worker si muere solo (p.ej. al perderse la cámara): antes solo liberaba el slot y la cámara quedaba "detenida" para siempre; ahora `_watchdog_pass` → `_maybe_restart_dead_worker` la relanza con las mismas guardas anti crash-loop. No relanza si la cámara ya no está activa ni si el worker murió por fallo de configuración (`_config_error`). Ver `tests/test_camera_manager_f1.py` (tests `test_watchdog_relanza_worker_muerto_*`).
 - **F2** concurrencia: inferencia YOLO serializada sobre el modelo compartido + contadores `/api/perf`.
 - **F3** notificaciones: n8n/Telegram en worker desacoplado (cola acotada), HourClock de respaldo.
 - **F4** SQLite/galería/eventos: F4.1 BUG-DB-001, F4.2 integridad borrado, F4.3 índices, F4.4 benchmark SQLite, F4.5 retención de galería (worker daemon), F4.6 export ZIP por archivo temporal, F4.7 docs.
@@ -108,6 +108,7 @@ Variables de entorno relevantes: ver `.env.example` (`MODEL_PATH`, `FRAME_SKIP`,
 - **F7** observabilidad: `/api/health` (uptime, python, threads, estado por cámara, 503 si la BD cae). Ver `tests/test_health_f7.py`.
 - **F8** Docker/producción: torch/torchvision pinneados (GAP-PROD-02), `HEALTHCHECK` contra `/api/health`, `.dockerignore` (no copia `.env`/`data/`), `stop_grace_period: 30s` para el shutdown limpio, red compose standalone (`external: false` con `name: n8n_default`).
 - **F9** tuning de detección (hardware débil): benchmark real en docs/detection-tuning.md. Recomendado para CPUs de 2 núcleos: `IMGSZ=960` + `conf_threshold=0.25` + `TORCH_THREADS=2` + `GRABBER_MAX_FPS=8` (nuevo tope de decodificación) + `LIVE_STREAM_FPS`/`LIVE_MAX_WIDTH` bajos. OpenVINO/ONNX se midieron MÁS lentos que torch nativo en esta máquina (NO agregar al contenedor sin re-benchmark).
+- **F10** estabilización de IDs ante ID switches (autos rápidos): `app/id_stabilizer.py` (solo stdlib) asocia detecciones consecutivas por clase + proximidad/IoU y re-etiqueta `tracker_id` con `entity_id` estables ANTES de `line_zone.trigger()`. LineZone queda intacto (semántica in/out). Configurable: `ID_ASSOC_MAX_AGE_FRAMES`, `ID_ASSOC_MAX_DISPLACEMENT` (debe ser > 1.0: un cruce real desplaza el centro ≥ el alto del bbox), `ID_ASSOC_MIN_OVERLAP`. `COUNTING_DEBUG` ahora loguea `raw_ids` (ByteTrack) vs `ids(entity)` (LineZone). Tests: `tests/test_id_stabilizer.py` (stdlib) + `test_line_zone_f3.py::test_line_zone_cuenta_si_se_estabilizan_ids_ante_switch` (docker).
 
 ## Convenciones Importantes
 
