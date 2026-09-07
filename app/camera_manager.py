@@ -332,9 +332,29 @@ def _watchdog_pass():
             if cam is not None:
                 _maybe_restart_from_watchdog(name, cam, time.time())
         elif decision == "dead":
-            logger.warning("[watchdog] el worker de '%s' termino solo -- se libera el slot", name)
+            # El worker termino SOLO (nadie lo detuvo desde el manager): la
+            # camara quedo sin procesar. Antes esto solo liberaba el slot y la
+            # camara quedaba "detenida" para siempre hasta intervencion manual.
+            # Ahora se relanza automaticamente, respetando el anti crash-loop.
+            # EXCEPCION: si murio por un fallo de configuracion no se auto-
+            # reinicia (el operador debe corregir) -- el evaluador ya cerro el
+            # thread, asi que discriminamos aca antes de liberar el worker.
+            config_error = getattr(worker, "_config_error", False)
+            if config_error:
+                logger.warning(
+                    "[watchdog] '%s' murio por fallo de configuracion: no se "
+                    "auto-reinicia (corregir desde la UI)",
+                    name,
+                )
+                with _lock:
+                    _workers.pop(name, None)
+                continue
+            logger.warning(
+                "[watchdog] el worker de '%s' termino solo -- se relanza", name
+            )
             with _lock:
                 _workers.pop(name, None)
+            _maybe_restart_dead_worker(name, time.time())
         elif decision == "failed":
             logger.warning(
                 "[watchdog] '%s' con fallo de configuracion: no se auto-reinicia "
@@ -386,6 +406,36 @@ def _maybe_restart_from_watchdog(name, cam, now):
     logger.warning("[watchdog] '%s' sin progreso o fallo -- reiniciando worker", name)
     _record_restart(name, time.time())
     restart_camera(cam)
+
+
+def _maybe_restart_dead_worker(name, now):
+    """Re-relanza una camara cuyo worker termino solo (murio en runtime por la
+    perdida de la camara u otra excepcion). Mismas guardas anti crash-loop que
+    un reinicio: respeta WATCHDOG_MAX_RESTARTS_PER_WINDOW y el intervalo minimo.
+
+    No relanza si:
+    - la camara ya no esta registrada/activa (fue borrada o desactivada), o
+    - el worker murio por un fallo de CONFIGURACION (_config_error): eso no se
+      arregla solo, lo corrige el operador desde la UI.
+    """
+    cam = None
+    try:
+        cam = get_camera(name)
+    except Exception as exc:
+        logger.warning("[watchdog] no se pudo leer la camara '%s' para relanzarla: %s", name, exc)
+    if cam is None or not cam.get("active"):
+        logger.warning("[watchdog] '%s' ya no esta activa -- no se relanza", name)
+        return
+    if not _restart_allowed(name, now):
+        logger.warning("[watchdog] '%s' en crash-loop: se omite relanzar el worker", name)
+        return
+    last = _restart_stats.get(name)
+    if last and last["times"] and (now - last["times"][-1]) < WATCHDOG_MIN_RESTART_INTERVAL_SECONDS:
+        logger.debug("[watchdog] '%s' reiniciado hace poco -- se espera el relanzamiento", name)
+        return
+    logger.warning("[watchdog] '%s' relanzando worker (termino solo)", name)
+    _record_restart(name, time.time())
+    start_camera(cam)
 
 
 def _restart_allowed(name, now):

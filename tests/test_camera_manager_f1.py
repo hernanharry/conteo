@@ -211,6 +211,77 @@ def test_watchdog_no_reinicia_worker_reconectando(db, camera_dict, fake_factory)
     assert "entrada-principal" not in camera_manager._restart_stats
 
 
+def test_watchdog_relanza_worker_muerto_solo(db, camera_dict, fake_factory):
+    """Bug: cuando el worker muere solo (p.ej. al perderse la camara), antes el
+    watchdog solo liberaba el slot y la camara quedaba 'detenida' para siempre.
+    Ahora la relanza automaticamente (con anti crash-loop)."""
+    db.add_camera(camera_dict)
+    camera_manager.start_camera(camera_dict)
+    muerto = camera_manager.get_worker("entrada-principal")
+    assert muerto is not None
+    muerto.set_alive(False)  # murio solo en runtime, sin stop() del manager
+
+    camera_manager._watchdog_pass()
+
+    nuevo = camera_manager.get_worker("entrada-principal")
+    assert nuevo is not None
+    assert nuevo is not muerto  # relanzo un worker nuevo
+    assert camera_manager._restart_stats["entrada-principal"]["times"]
+
+
+def test_watchdog_no_relanza_worker_muerto_por_config(db, camera_dict, fake_factory):
+    """Un worker que muere por fallo de CONFIGURACION no se auto-reinicia: lo
+    corrige el operador desde la UI."""
+    db.add_camera(camera_dict)
+    camera_manager.start_camera(camera_dict)
+    muerto = camera_manager.get_worker("entrada-principal")
+    muerto._config_error = True
+    muerto.set_alive(False)
+
+    camera_manager._watchdog_pass()
+
+    assert camera_manager.get_worker("entrada-principal") is None
+    assert "entrada-principal" not in camera_manager._restart_stats
+
+
+def test_watchdog_no_relanza_worker_de_camara_inactiva(db, camera_dict, fake_factory, monkeypatch):
+    """Guardia defensiva: si la camara ya no esta activa (p.ej. borrada o
+    desactivada) el worker muerto no se relanza."""
+    db.add_camera(camera_dict)
+    camera_manager.start_camera(camera_dict)
+    muerto = camera_manager.get_worker("entrada-principal")
+    muerto.set_alive(False)
+
+    # el worker muerto "quedo" para una camara que ya no existe / esta inactiva
+    monkeypatch.setattr(camera_manager, "get_camera", lambda name: {"name": name, "active": False})
+
+    camera_manager._watchdog_pass()
+
+    assert camera_manager.get_worker("entrada-principal") is None
+    assert "entrada-principal" not in camera_manager._restart_stats
+
+
+def test_watchdog_no_relanza_en_crash_loop(db, camera_dict, fake_factory, monkeypatch):
+    monkeypatch.setattr(camera_manager, "WATCHDOG_MAX_RESTARTS_PER_WINDOW", 1)
+    monkeypatch.setattr(camera_manager, "WATCHDOG_RESTART_WINDOW_SECONDS", 60)
+    monkeypatch.setattr(camera_manager, "WATCHDOG_MIN_RESTART_INTERVAL_SECONDS", 0)
+
+    db.add_camera(camera_dict)
+    camera_manager.start_camera(camera_dict)
+
+    # primer worker muere -> relanza (worker #2)
+    camera_manager.get_worker("entrada-principal").set_alive(False)
+    camera_manager._watchdog_pass()
+    assert len(fake_factory) == 2
+
+    # el segundo tambien muere al instante -> crash-loop: NO relanza
+    camera_manager.get_worker("entrada-principal").set_alive(False)
+    camera_manager._watchdog_pass()
+    assert len(fake_factory) == 2
+    assert camera_manager.get_worker("entrada-principal") is None
+    assert camera_manager._restart_stats["entrada-principal"]["blocked"] is True
+
+
 def test_watchdog_crash_loop_bloquea_reinicios(monkeypatch, db, camera_dict, fake_factory):
     monkeypatch.setattr(camera_manager, "WATCHDOG_MAX_RESTARTS_PER_WINDOW", 2)
     monkeypatch.setattr(camera_manager, "WATCHDOG_RESTART_WINDOW_SECONDS", 60)
