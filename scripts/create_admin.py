@@ -92,7 +92,7 @@ def main():
         return
 
     db.create_user(username, auth.hash_password(password), role=args.role)
-    if db.user_count() == 1:
+    if len(db.list_users()) == 1:
         print(f"primer usuario admin '{username}' creado.")
     else:
         print(f"usuario '{username}' (rol={args.role}) creado.")
