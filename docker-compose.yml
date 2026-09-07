@@ -22,7 +22,7 @@ services:
       - "traefik.http.routers.tracker.entrypoints=web"
       - "traefik.http.services.tracker.loadbalancer.server.port=8001"
     ports:
-      - "8001:8001"  # UI web: http://IP-DEL-SERVIDOR:8001
+      - "8001:8001"  # UI web: http://192.168.10.160:8001
     volumes:
       - ./data:/app/data  # SQLite (cámaras + detecciones) y galería de imágenes
     networks:
