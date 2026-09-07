@@ -32,6 +32,8 @@
 (function () {
   const cameraName = {{ camera.name | tojson }};
   const img = document.getElementById("liveImg");
+  const video = document.getElementById("liveVideo");
+  const wrap = document.getElementById("liveWrap");
   const svg = document.getElementById("lineOverlay");
   const editBtn = document.getElementById("editLineBtn");
   const saveBtn = document.getElementById("saveLineBtn");
@@ -99,14 +101,17 @@
   }
 
   function displayToNatural(px, py) {
-    const rect = img.getBoundingClientRect();
+    // Se usa el contenedor (envuelve al img MJPEG o al video HLS, el que
+    // esté visible): con HLS activo el <img> queda display:none y su rect es
+    // 0x0, lo que dibujaba/guardaba la linea en otro lado.
+    const rect = wrap.getBoundingClientRect();
     const scaleX = naturalW / rect.width;
     const scaleY = naturalH / rect.height;
     return { x: Math.round(px * scaleX), y: Math.round(py * scaleY) };
   }
 
   function naturalToDisplay(x, y) {
-    const rect = img.getBoundingClientRect();
+    const rect = wrap.getBoundingClientRect();
     const scaleX = rect.width / naturalW;
     const scaleY = rect.height / naturalH;
     return { x: x * scaleX, y: y * scaleY };
@@ -139,7 +144,7 @@
   }
 
   function syncOverlaySize() {
-    const rect = img.getBoundingClientRect();
+    const rect = wrap.getBoundingClientRect();
     svg.setAttribute("width", rect.width);
     svg.setAttribute("height", rect.height);
     svg.style.width = rect.width + "px";
@@ -147,18 +152,32 @@
     drawLine(pendingLine || currentLine);
   }
 
-  img.addEventListener("load", function () {
-    if (!naturalW && img.naturalWidth) {
-      if (nativeW > 0 && nativeH > 0) {
-        naturalW = nativeW;
-        naturalH = nativeH;
-      } else {
-        naturalW = img.naturalWidth;
-        naturalH = img.naturalHeight;
-      }
+  function adoptNatural() {
+    if (naturalW) return;
+    if (nativeW > 0 && nativeH > 0) {
+      naturalW = nativeW;
+      naturalH = nativeH;
+    } else if (img.naturalWidth > 0) {
+      naturalW = img.naturalWidth;
+      naturalH = img.naturalHeight;
+    } else if (video && video.videoWidth > 0) {
+      naturalW = video.videoWidth;
+      naturalH = video.videoHeight;
     }
+  }
+
+  img.addEventListener("load", function () {
+    adoptNatural();
     syncOverlaySize();
   });
+  if (video) {
+    // con HLS activo el <img> queda oculto y nunca dispara load: el video da
+    // la resolución del stream real y hay que re-sincronizar el overlay.
+    video.addEventListener("loadedmetadata", function () {
+      adoptNatural();
+      syncOverlaySize();
+    });
+  }
   window.addEventListener("resize", syncOverlaySize);
 
   editBtn.addEventListener("click", function () {

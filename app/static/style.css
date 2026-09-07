@@ -99,7 +99,7 @@ button.danger { background: var(--danger); color: #fff; padding: 6px 12px; }
 .status-reconectando, .status-conectando, .status-iniciando { background: rgba(229,185,62,0.15); color: var(--warn); }
 .status-detenida { background: rgba(139,146,156,0.15); color: var(--muted); }
 
-.live-view img { width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+.live-view img, .live-view video { width: 100%; display: block; border-radius: 8px; border: 1px solid var(--border); }
 
 .live-view {
   position: relative;
