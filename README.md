@@ -268,7 +268,9 @@ El contenedor tiene un `HEALTHCHECK` nativo que consulta `/api/health` cada
 
 ### Hardening
 
-- Usuario `appuser:appuser` (no-root) dentro del contenedor.
+- En compose el contenedor corre como root para poder escribir en el volumen
+  `./data` (montado como root). El usuario no-root `appuser` queda definido en
+  el Dockerfile para contextos sin volume mount.
 - Límites de recursos: 6GB RAM / 3.5 CPU (ajustar en `docker-compose.yml`).
 - `stop_grace_period: 30s` para shutdown limpio (persiste conteos).
 

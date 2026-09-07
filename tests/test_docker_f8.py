@@ -47,9 +47,14 @@ def test_compose_has_resource_limits():
     assert "cpus:" in content
 
 
-def test_compose_has_nonroot_user():
+def test_compose_does_not_force_nonroot_user():
+    # fix(f8) 36873ff: `user: appuser` en compose rompia los permisos de
+    # escritura sobre el volumen ./data montado como root (BD inaccesible).
+    # En compose el contenedor corre como root para poder persistir; el
+    # appuser del Dockerfile queda solo para builds/contextos sin volume mount.
     content = (REPO_ROOT / "docker-compose.yml").read_text()
-    assert "appuser:appuser" in content
+    service_block = content.split("traefik:", 1)[0]
+    assert "appuser" not in service_block
 
 
 def test_compose_has_stop_grace_period():
